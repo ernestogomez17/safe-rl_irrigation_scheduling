@@ -190,7 +190,7 @@ class IrrigationOptimizationStudy:
         # Update training parameters for cluster execution
         self.base_training_params.update({
             'device': self.device,
-            'num_epochs': 10,  # Reduced for optimization
+            'num_epochs': 50,  # Reduced for optimization
             'evaluate_episode_num': 1,
             'plot_save_frequency': 1000,
             'sample_episode_num': 20,

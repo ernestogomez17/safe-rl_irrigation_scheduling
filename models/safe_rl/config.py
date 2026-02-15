@@ -1,3 +1,5 @@
+import torch
+
 def config(dataset, model, n_days_ahead, chance_const):
     """
     Setup parameters for different model types.
@@ -26,7 +28,7 @@ def config(dataset, model, n_days_ahead, chance_const):
         'gamma': 0.99,
         'polyak': 0.99,
         'model_type': model,
-        'hidden_sizes': [256, 256],
+        'hidden_sizes': [128, 128],
         'chance_const': chance_const,
         'optimistic_regularization': 0.0,
         'temperature': 1.0,
@@ -97,7 +99,7 @@ def config(dataset, model, n_days_ahead, chance_const):
         'max_episode_steps': 1000,
         'batch_size': 512,
         'seed': 0,
-        'device': "gpu",
+        'device': "cuda" if torch.cuda.is_available() else "cpu",
         'device_id': 0,
         'threads': 1,
     }
