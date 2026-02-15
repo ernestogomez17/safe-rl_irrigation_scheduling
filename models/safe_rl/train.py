@@ -28,7 +28,7 @@ _LAGRANGIAN_KEYS = [
     'KP_s_star', 'KI_s_star', 'KD_s_star',
     'KP_sfc',   'KI_sfc',   'KD_sfc',
     'KP_sw',    'KI_sw',    'KD_sw',
-    'optimistic_regularization', 'temperature',
+    'optimistic_regularization', 'use_regularization_decay', 'temperature',
 ]
 
 

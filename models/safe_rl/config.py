@@ -30,7 +30,8 @@ def config(dataset, model, n_days_ahead, chance_const):
         'model_type': model,
         'hidden_sizes': [128, 128],
         'chance_const': chance_const,
-        'optimistic_regularization': 0.0,
+        'optimistic_regularization': 0.3,
+        'use_regularization_decay': True,
     }
 
     # ── Default PID gains (used by Lagrangian models) ────────

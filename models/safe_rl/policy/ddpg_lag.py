@@ -102,8 +102,8 @@ class DDPGLagrangian(DDPG):
         KI_sw: float = 1.0,
         KD_sw: float = 0.1,
         safe: bool = True,
-        optimistic_regularization: float = 0.0,
-        use_regularization_decay: bool = False,
+        optimistic_regularization: float = 0.3,
+        use_regularization_decay: bool = True,
         temperature: float = 1.0,
         **kwargs,
     ) -> None:
