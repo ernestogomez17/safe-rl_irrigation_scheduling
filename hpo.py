@@ -15,7 +15,7 @@ Features:
 - Cluster-friendly execution
 
 Usage:
-    python hop.py --n-days-ahead 7 --model-type DDPGLagrangian --chance-const 0.95
+    python hpo.py --n-days-ahead 7 --model-type DDPGLagrangian --chance-const 0.95
 """
 
 import os
@@ -57,7 +57,7 @@ class IrrigationOptimizationStudy:
     """
     
     def __init__(self, n_days_ahead=7, model_type='DDPGLagrangian', chance_const=0.95,
-                 base_path="/scratch/egomez/irrigation_hop",
+                 base_path="/scratch/egomez/irrigation_hpo",
                  n_workers=1, worker_id=0):
         self.base_path = Path(base_path)
         self.n_workers = n_workers
@@ -97,7 +97,7 @@ class IrrigationOptimizationStudy:
         
         # Study configuration
         self.study_config = {
-            'max_total_trials': 75,
+            'max_total_trials': 250,
             'checkpoint_frequency': 5,
             'convergence_threshold': 0.05,
             'memory_cleanup_frequency': 3,
@@ -106,17 +106,17 @@ class IrrigationOptimizationStudy:
         # Initialize optimization space - all 9 PID parameters for 3 constraints
         self.optimization_space = {
             # PID parameters for s_star constraint
-            'KP_s_star': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
-            'KI_s_star': {'type': 'float', 'low': 0.0001, 'high': 10, 'log': True},
-            'KD_s_star': {'type': 'float', 'low': 0.0001, 'high': 1, 'log': True},
+            'KP_s_star': {'type': 'float', 'low': 0.1, 'high': 50, 'log': True},
+            'KI_s_star': {'type': 'float', 'low': 0.01, 'high': 30, 'log': True},
+            'KD_s_star': {'type': 'float', 'low': 0.01, 'high': 10, 'log': True},
             # PID parameters for sfc constraint  
-            'KP_sfc': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
-            'KI_sfc': {'type': 'float', 'low': 0.0001, 'high': 10, 'log': True},
-            'KD_sfc': {'type': 'float', 'low': 0.0001, 'high': 1, 'log': True},
+            'KP_sfc': {'type': 'float', 'low': 0.1, 'high': 50, 'log': True},
+            'KI_sfc': {'type': 'float', 'low': 0.01, 'high': 30, 'log': True},
+            'KD_sfc': {'type': 'float', 'low': 0.01, 'high': 10, 'log': True},
             # PID parameters for sw constraint
-            'KP_sw': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
-            'KI_sw': {'type': 'float', 'low': 0.0001, 'high': 10, 'log': True},
-            'KD_sw': {'type': 'float', 'low': 0.0001, 'high': 1, 'log': True},
+            'KP_sw': {'type': 'float', 'low': 0.1, 'high': 50, 'log': True},
+            'KI_sw': {'type': 'float', 'low': 0.01, 'high': 30, 'log': True},
+            'KD_sw': {'type': 'float', 'low': 0.01, 'high': 10, 'log': True},
         }
         
         # Setup base parameters using setup_parameters.py
@@ -190,7 +190,7 @@ class IrrigationOptimizationStudy:
         # Update training parameters for cluster execution
         self.base_training_params.update({
             'device': self.device,
-            'num_epochs': 50,  # Reduced for optimization
+            'num_epochs': 100,
             'evaluate_episode_num': 1,
             'plot_save_frequency': 1000,
             'sample_episode_num': 20,
@@ -214,15 +214,24 @@ class IrrigationOptimizationStudy:
     
     def objective(self, trial):
         """
-        Optuna objective function for Bayesian hyperparameter optimization.
-        Optimizes all 9 PID parameters (3 constraints × 3 PID gains each) while using 
-        pre-defined parameters for everything else.
-        
-        Args:
-            trial: Optuna trial object for hyperparameter sampling
-            
+        Optuna objective function for PID hyperparameter optimisation.
+
+        Uses a smooth quadratic-penalty formulation:
+
+            cost = -eval_reward  +  w · max(0, viol_rate - acceptable_rate)²
+
+        - When feasible (violation rate ≤ acceptable), the penalty term is
+          zero and Optuna simply minimises negative reward (= maximises
+          water savings).
+        - When infeasible, the quadratic penalty grows smoothly with the
+          excess violation rate, giving the TPE sampler a useful gradient
+          signal near the feasibility boundary.
+        - ``w`` (PENALTY_WEIGHT) is set so that a 10 % excess violation
+          adds a penalty roughly equal to the reward range, ensuring
+          constraint satisfaction dominates but the landscape stays smooth.
+
         Returns:
-            float: Average cost per episode (to minimize)
+            float: Scalar cost to minimise (lower is better).
         """
         trial_start_time = datetime.now()
         self.cleanup_memory()
@@ -268,24 +277,37 @@ class IrrigationOptimizationStudy:
                 trial_id
             )
             
-            # ---- Extract performance metric ----
-            # train_agent returns:
-            #   all_rewards, all_violations, best_eval_violations, total_episodes
-            # Primary objective: minimise constraint violations.
-            # Tie-break on reward (higher is better → subtract a small fraction).
+            # ---- Smooth constraint-aware objective (quadratic penalty) ----
+            #
+            # Goal: find PID gains so the policy satisfies the chance constraint
+            # at the configured threshold while maximising reward.
+            #
+            # 1. Compute violation RATE (not raw count) so the objective is
+            #    scale-invariant across different n_days_ahead horizons.
+            # 2. Compare against the acceptable rate (1 - chance_const).
+            # 3. Apply a smooth quadratic penalty for any excess violation,
+            #    keeping the landscape differentiable for the TPE surrogate.
+            #
+            PENALTY_WEIGHT = 1e5  # scales so 10% excess ≈ 1e3 penalty
+            
             best_violations = results.get('best_eval_violations', float('inf'))
-            
-            # Use mean reward over the last 20 epochs as a secondary signal
-            all_rewards = results.get('all_rewards', [])
-            tail_reward = float(np.mean(all_rewards[-20:])) if len(all_rewards) >= 20 else (
-                float(np.mean(all_rewards)) if all_rewards else 0.0
-            )
-            
-            # Combined objective: violations (primary) - small reward bonus
-            # Reward is typically negative (irrigation cost), so subtracting
-            # a fraction encourages higher reward when violations are equal.
-            avg_cost = best_violations - 0.01 * tail_reward
-            
+            best_reward = results.get('best_eval_reward', float('-inf'))
+            mean_ep_len = float(np.mean(results.get('all_eval_ep_lens', [1.0])))
+
+            # Violation rate: fraction of unsafe decision steps
+            violation_rate = best_violations / max(mean_ep_len, 1.0)
+            acceptable_rate = 1.0 - self.config['chance_const']
+
+            # Smooth quadratic penalty (zero when feasible)
+            excess = max(0.0, violation_rate - acceptable_rate)
+            feasible = excess == 0.0
+            if feasible:
+                avg_cost = -float(best_reward)
+                penalty = 0.0
+            else:
+                penalty = 1.0 + PENALTY_WEIGHT * excess ** 2
+                avg_cost = penalty
+
             # Save trial results
             trial_results = {
                 'trial_number': trial.number,
@@ -293,7 +315,13 @@ class IrrigationOptimizationStudy:
                 'all_agent_parameters': {k: v for k, v in agent_params.items() if k not in ['env', 'weather_data']},
                 'avg_cost': avg_cost,
                 'best_eval_violations': best_violations,
-                'tail_reward': tail_reward,
+                'best_eval_reward': best_reward,
+                'violation_rate': violation_rate,
+                'acceptable_rate': acceptable_rate,
+                'excess_violation': excess,
+                'penalty': penalty,
+                'feasible': feasible,
+                'mean_eval_ep_len': mean_ep_len,
                 'duration_minutes': (datetime.now() - trial_start_time).total_seconds() / 60,
                 'timestamp': datetime.now().isoformat(),
                 'configuration': self.config
@@ -302,7 +330,13 @@ class IrrigationOptimizationStudy:
             with open(trial_dir / 'trial_results.json', 'w') as f:
                 json.dump(trial_results, f, indent=2, default=lambda o: float(o))
             
-            self.logger.info(f"Trial {trial.number} completed: cost={avg_cost:.6f}")
+            self.logger.info(
+                f"Trial {trial.number} completed: cost={avg_cost:.4f}  "
+                f"viol_rate={violation_rate:.3f}  acceptable={acceptable_rate:.3f}  "
+                f"penalty={penalty:.2f}  "
+                f"{'FEASIBLE' if feasible else 'INFEASIBLE'}  "
+                f"eval_reward={best_reward:.2f}"
+            )
             
             # Cleanup
             del results
@@ -689,7 +723,7 @@ def main():
                         help='Chance constraint value (0.0-1.0, default: 0.95)')
     parser.add_argument('--trials', type=int, default=None,
                         help='Total target number of trials (default: use config setting)')
-    parser.add_argument('--base-path', type=str, default='/scratch/egomez/irrigation_hop',
+    parser.add_argument('--base-path', type=str, default='/scratch/egomez/irrigation_hpo',
                         help='Base output path')
     parser.add_argument('--n-workers', type=int, default=1,
                         help='Number of parallel workers for this configuration')
@@ -731,12 +765,17 @@ def main():
         print(f"Total trials in study: {len(study.trials)}")
         
         if completed_trials:
-            print(f"Best cost: {study.best_value:.6f}  (trial #{study.best_trial.number})")
+            best = study.best_trial
+            feasible = best.value < 1e6
+            print(f"Best cost: {study.best_value:.4f}  (trial #{best.number})  "
+                  f"{'FEASIBLE' if feasible else 'INFEASIBLE'}")
             for constraint in ('s_star', 'sfc', 'sw'):
                 kp = study.best_params.get(f'KP_{constraint}', 0)
                 ki = study.best_params.get(f'KI_{constraint}', 0)
                 kd = study.best_params.get(f'KD_{constraint}', 0)
                 print(f"  {constraint}: KP={kp:.6f}, KI={ki:.6f}, KD={kd:.6f}")
+            n_feasible = sum(1 for t in completed_trials if t.value < 1e6)
+            print(f"Feasible trials: {n_feasible}/{len(completed_trials)}")
         else:
             failed = [t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]
             print(f"No completed trials. Failed: {len(failed)}")

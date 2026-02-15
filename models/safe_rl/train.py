@@ -118,9 +118,13 @@ def train_agent(env_params, agent_params, training_params, model_directory, iden
     save_interval = training_params.get('plot_save_frequency')
 
     # ---- Tracking arrays (one entry per epoch) ----
-    all_rewards = []      # mean reward per epoch
-    all_violations = []   # mean violations per epoch
+    all_rewards = []      # mean training reward per epoch
+    all_violations = []   # mean training violations per epoch
+    all_eval_rewards = []     # mean eval reward per epoch
+    all_eval_violations = []  # mean eval violations per epoch
+    all_eval_ep_lens = []     # mean eval episode length per epoch
     best_eval_violations = float('inf')
+    best_eval_reward = float('-inf')
 
     total_steps = 0
     start_time = _time.time()
@@ -160,12 +164,21 @@ def train_agent(env_params, agent_params, training_params, model_directory, iden
         # and clears epoch_dict.
         eval_stats = logger.get_stats('eval/TestEpNumViolations')
         mean_eval_violations = eval_stats[0]  # mean
+        eval_reward_stats = logger.get_stats('eval/TestEpRet')
+        mean_eval_reward = eval_reward_stats[0]
+        eval_len_stats = logger.get_stats('eval/TestEpLen')
+        mean_eval_ep_len = eval_len_stats[0]
+
+        all_eval_rewards.append(mean_eval_reward)
+        all_eval_violations.append(mean_eval_violations)
+        all_eval_ep_lens.append(mean_eval_ep_len)
 
         _log_metrics(logger, epoch, total_steps,
                      _time.time() - start_time)
 
         if mean_eval_violations < best_eval_violations:
             best_eval_violations = mean_eval_violations
+            best_eval_reward = mean_eval_reward
             agent.save_model()  # save best
             logger.save_state({'env': env}, None)
 
@@ -186,6 +199,10 @@ def train_agent(env_params, agent_params, training_params, model_directory, iden
     return {
         'all_rewards': all_rewards,
         'all_violations': all_violations,
+        'all_eval_rewards': all_eval_rewards,
+        'all_eval_violations': all_eval_violations,
+        'all_eval_ep_lens': all_eval_ep_lens,
         'best_eval_violations': best_eval_violations,
+        'best_eval_reward': best_eval_reward,
         'total_episodes': len(all_violations) * sample_episode_num,
     }

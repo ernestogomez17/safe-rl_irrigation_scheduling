@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
-#SBATCH --job-name=irrigation_hop
-#SBATCH --output=/scratch/egomez/irrigation_hop/job_%j.out
+#SBATCH --job-name=irrigation_hpo
+#SBATCH --output=/scratch/egomez/irrigation_hpo/job_%j.out
 #SBATCH --mail-type=FAIL,END
 #SBATCH --mail-user=ernesto.gomez@mail.utoronto.ca
 
@@ -19,8 +19,8 @@ module load gnu-parallel
 source /home/egomez/irrigation_project/irrigation_env/bin/activate
 
 PYTHON=/home/egomez/irrigation_project/irrigation_env/bin/python3
-SCRIPT=/home/egomez/irrigation_project/hop.py
-BASE_PATH=/scratch/egomez/irrigation_hop
+SCRIPT=/home/egomez/irrigation_project/hpo.py
+BASE_PATH=/scratch/egomez/irrigation_hpo
 mkdir -p "${BASE_PATH}"
 
 #=======================================================================
