@@ -1,8 +1,8 @@
 import os
 import pandas as pd
 import argparse
-from data.water_environment import WaterEnvironment
-from safe_rl.train import train_agent
+from env.water_environment import WaterEnvironment
+from models.safe_rl.train import train_agent
 from models.safe_rl.config import setup_experiment_parameters  # Import the wrapper function
 
 
@@ -10,7 +10,7 @@ def setup_directories_and_data():
     """Setup directories and load weather data."""
     folder_path_initial = '/home/egomez/irrigation_project/'
     folder_path_output = '/scratch/egomez/irrigation_project_output/'
-    data_file = os.path.join(folder_path_initial, 'daily_weather_data.csv')
+    data_file = os.path.join(folder_path_initial, 'env', 'daily_weather_data.csv')
     model_directory = os.path.join(folder_path_output, 'models')
     
     os.makedirs(model_directory, exist_ok=True)

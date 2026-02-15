@@ -4,10 +4,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
-from safe_rl.policy.base_policy import Policy
-from safe_rl.policy.networks import MLPActor, EnsembleQCritic
-from safe_rl.util.logger import EpochLogger
-from safe_rl.util.torch_util import (count_vars, get_device_name, to_device, to_ndarray,
+from models.safe_rl.policy.base_policy import Policy
+from models.safe_rl.util.networks import MLPActor, EnsembleQCritic
+from models.safe_rl.util.logger import EpochLogger
+from models.safe_rl.util.torch_util import (count_vars, get_device_name, to_device, to_ndarray,
                                      to_tensor)
 from torch.optim import Adam
 

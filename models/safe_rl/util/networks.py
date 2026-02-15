@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
+LOG = False  # Set to True for debugging loss computation
+
 # "normal" or "uniform" or None
 INIT_METHOD = "normal"
 
@@ -173,8 +175,21 @@ class EnsembleQCritic(nn.Module):
         return torch.min(qs, dim=0).values, q_list
 
     def loss(self, target, q_list=None):
-        """Compute loss for all Q-networks in ensemble."""
-        losses = [((q - target)**2).mean() for q in q_list]
+        """Compute loss for all Q-networks in ensemble.
+        
+        Uses BCE for probabilistic critics (outputs in [0,1]) and MSE for
+        standard reward critics (unbounded outputs).
+        """
+        if self.probabilistic:
+            # Binary cross-entropy is the correct loss for probabilistic outputs.
+            # MSE has vanishing gradients near 0 and 1 when combined with sigmoid.
+            eps = 1e-7
+            losses = [F.binary_cross_entropy(
+                q.clamp(eps, 1 - eps),
+                target.clamp(eps, 1 - eps)
+            ) for q in q_list]
+        else:
+            losses = [((q - target)**2).mean() for q in q_list]
         return sum(losses)
 
 class ScaledTanh(nn.Module):

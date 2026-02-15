@@ -15,7 +15,7 @@ Features:
 - Cluster-friendly execution
 
 Usage:
-    python irrigation_optimization_cluster.py --n-days-ahead 7 --model-type DDPGLagrangian --chance-const 0.95 --safe-buffer
+    python hop.py --n-days-ahead 7 --model-type DDPGLagrangian --chance-const 0.95
 """
 
 import os
@@ -26,23 +26,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 import optuna
 from optuna.samplers import TPESampler
+from optuna.storages import JournalStorage, JournalFileStorage
 import gc
 import torch
-import pickle
 import json
 from datetime import datetime
 import logging
 import traceback
 from pathlib import Path
 
-# Import custom modules (assuming they exist in the project)
+# Import custom modules
 try:
-    from data.water_environment import WaterEnvironment
-    from safe_rl.train import train_agent
-    from models.safe_rl.config import setup_parameters  # Import the setup function
+    from env.water_environment import WaterEnvironment
+    from models.safe_rl.train import train_agent
+    from models.safe_rl.config import config as setup_parameters
 except ImportError as e:
     print(f"Warning: Could not import custom modules: {e}")
-    print("Ensure water_environment.py, training.py, and setup_parameters.py are in the Python path")
+    print("Ensure water_environment.py, train.py, and config.py are importable")
 
 # Configure matplotlib for headless execution
 plt.switch_backend('Agg')
@@ -56,8 +56,12 @@ class IrrigationOptimizationStudy:
     from setup_parameters.py while optimizing only PID controller parameters.
     """
     
-    def __init__(self, n_days_ahead=7, model_type='DDPGLagrangian', chance_const=0.95, base_path="/scratch/egomez/irrigation_project_output"):
+    def __init__(self, n_days_ahead=7, model_type='DDPGLagrangian', chance_const=0.95,
+                 base_path="/scratch/egomez/irrigation_hop",
+                 n_workers=1, worker_id=0):
         self.base_path = Path(base_path)
+        self.n_workers = n_workers
+        self.worker_id = worker_id
 
         if n_days_ahead < 0 or n_days_ahead > 7:
             raise ValueError("n_days_ahead must be between 0 and 7")
@@ -86,7 +90,7 @@ class IrrigationOptimizationStudy:
         self.setup_logging()
         
         # Load data
-        self.data_file = '/home/egomez/irrigation_project/daily_weather_data.csv'
+        self.data_file = '/home/egomez/irrigation_project/env/daily_weather_data.csv'
         if not os.path.exists(self.data_file):
             raise FileNotFoundError(f"Weather data file not found: {self.data_file}")
         self.df = pd.read_csv(self.data_file)
@@ -147,8 +151,10 @@ class IrrigationOptimizationStudy:
             directory.mkdir(parents=True, exist_ok=True)
     
     def setup_logging(self):
-        """Configure logging for the study."""
-        log_file = self.output_dir / 'logs' / f'optimization_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        """Configure logging for the study (per-worker log file)."""
+        log_file = self.output_dir / 'logs' / (
+            f'optimization_w{self.worker_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        )
         
         logging.basicConfig(
             level=logging.INFO,
@@ -184,7 +190,7 @@ class IrrigationOptimizationStudy:
         # Update training parameters for cluster execution
         self.base_training_params.update({
             'device': self.device,
-            'num_epochs': 200,  # Reduced for optimization
+            'num_epochs': 10,  # Reduced for optimization
             'evaluate_episode_num': 1,
             'plot_save_frequency': 1000,
             'sample_episode_num': 20,
@@ -249,35 +255,36 @@ class IrrigationOptimizationStudy:
             self.logger.info(f"  sfc:    KP={sampled_params['KP_sfc']:.4f}, KI={sampled_params['KI_sfc']:.4f}, KD={sampled_params['KD_sfc']:.4f}")
             self.logger.info(f"  sw:     KP={sampled_params['KP_sw']:.4f}, KI={sampled_params['KI_sw']:.4f}, KD={sampled_params['KD_sw']:.4f}")
             
-            # Create environment
-            env = WaterEnvironment(**self.base_env_params)
-            agent_params.update({
-                'env': env,
-                'chkpt_dir': str(trial_dir),
-            })
-            
-            # Train agent
+            # Train agent (creates its own env internally)
+            # Vary seed per trial so parallel workers explore different trajectories
+            training_params = self.base_training_params.copy()
+            training_params['seed'] = 42 + trial.number
+
             results = train_agent(
                 self.base_env_params, 
                 agent_params, 
-                self.base_training_params, 
+                training_params, 
                 str(trial_dir), 
                 trial_id
             )
             
-            # Extract performance metric - handle potential missing keys
-            if 'avg_cost_per_episode' in results:
-                avg_cost = results['avg_cost_per_episode']
-            elif 'avg_cost' in results:
-                avg_cost = results['avg_cost']
-            else:
-                # Fallback: calculate from total costs if available
-                total_costs = results.get('total_costs', [])
-                if isinstance(total_costs, list) and len(total_costs) > 0:
-                    avg_cost = np.mean(total_costs)
-                else:
-                    self.logger.warning("No cost metric found in results, using default high cost")
-                    avg_cost = 1000.0
+            # ---- Extract performance metric ----
+            # train_agent returns:
+            #   all_rewards, all_violations, best_eval_violations, total_episodes
+            # Primary objective: minimise constraint violations.
+            # Tie-break on reward (higher is better → subtract a small fraction).
+            best_violations = results.get('best_eval_violations', float('inf'))
+            
+            # Use mean reward over the last 20 epochs as a secondary signal
+            all_rewards = results.get('all_rewards', [])
+            tail_reward = float(np.mean(all_rewards[-20:])) if len(all_rewards) >= 20 else (
+                float(np.mean(all_rewards)) if all_rewards else 0.0
+            )
+            
+            # Combined objective: violations (primary) - small reward bonus
+            # Reward is typically negative (irrigation cost), so subtracting
+            # a fraction encourages higher reward when violations are equal.
+            avg_cost = best_violations - 0.01 * tail_reward
             
             # Save trial results
             trial_results = {
@@ -285,19 +292,20 @@ class IrrigationOptimizationStudy:
                 'optimized_parameters': sampled_params,
                 'all_agent_parameters': {k: v for k, v in agent_params.items() if k not in ['env', 'weather_data']},
                 'avg_cost': avg_cost,
-                'total_costs': results.get('total_costs', avg_cost),
+                'best_eval_violations': best_violations,
+                'tail_reward': tail_reward,
                 'duration_minutes': (datetime.now() - trial_start_time).total_seconds() / 60,
                 'timestamp': datetime.now().isoformat(),
                 'configuration': self.config
             }
             
             with open(trial_dir / 'trial_results.json', 'w') as f:
-                json.dump(trial_results, f, indent=2)
+                json.dump(trial_results, f, indent=2, default=lambda o: float(o))
             
             self.logger.info(f"Trial {trial.number} completed: cost={avg_cost:.6f}")
             
             # Cleanup
-            del env, results
+            del results
             self.cleanup_memory()
             
             return avg_cost
@@ -318,299 +326,126 @@ class IrrigationOptimizationStudy:
             }
             
             with open(trial_dir / 'trial_error.json', 'w') as f:
-                json.dump(error_info, f, indent=2)
+                json.dump(error_info, f, indent=2, default=lambda o: float(o))
             
             self.cleanup_memory()
             return 1000.0  # High cost for failed trials
     
-    def _is_study_compatible(self, study):
-        """
-        Check if an existing study is compatible with the current optimization space.
-        
-        Args:
-            study: Optuna study object
-            
-        Returns:
-            bool: True if compatible, False otherwise
-        """
-        try:
-            # Check if we have any existing trials
-            if len(study.trials) == 0:
-                return True  # Empty study is always compatible
-            
-            # Get trials to check parameter compatibility
-            all_trials = study.trials
-            completed_trials = [t for t in all_trials if t.state == optuna.trial.TrialState.COMPLETE]
-            failed_trials = [t for t in all_trials if t.state == optuna.trial.TrialState.FAIL]
-            
-            # Use any available trial (completed or failed) to check parameter names
-            reference_trial = None
-            if completed_trials:
-                reference_trial = completed_trials[0]
-            elif failed_trials:
-                reference_trial = failed_trials[0]
-            
-            if reference_trial is None:
-                return True  # No trials with parameters yet
-            
-            # Check if parameter names match exactly
-            existing_params = set(reference_trial.params.keys())
-            expected_params = set(self.optimization_space.keys())
-            
-            if existing_params != expected_params:
-                self.logger.warning(f"Parameter name mismatch. Expected: {expected_params}, Found: {existing_params}")
-                return False
-            
-            # Check if parameter ranges and log settings match by trying to recreate the study
-            try:
-                # Try to create a dummy trial with current parameter space
-                for param_name, param_config in self.optimization_space.items():
-                    # This will fail if the existing study has different log settings or ranges
-                    if param_config['log']:
-                        study._storage.get_trial_param(reference_trial._trial_id, param_name)
-                    else:
-                        study._storage.get_trial_param(reference_trial._trial_id, param_name)
-                
-                # Additional check: try to access best_params which will fail if distributions are incompatible
-                if completed_trials:
-                    _ = study.best_params
-                    
-            except Exception as e:
-                self.logger.warning(f"Parameter distribution compatibility check failed: {e}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            self.logger.warning(f"Compatibility check failed: {e}")
-            return False
-    
-    def _delete_incompatible_studies(self):
-        """Delete all study-related files to ensure clean start."""
-        try:
-            study_file = self.output_dir / 'checkpoints' / 'study_checkpoint.pkl'
-            if study_file.exists():
-                study_file.unlink()
-                self.logger.info("Deleted incompatible study checkpoint")
-            
-            # Also clean up any backup files older than current session
-            checkpoints_dir = self.output_dir / 'checkpoints'
-            if checkpoints_dir.exists():
-                for backup_file in checkpoints_dir.glob('study_backup_*.pkl'):
-                    try:
-                        backup_file.unlink()
-                        self.logger.info(f"Deleted old backup: {backup_file.name}")
-                    except Exception as e:
-                        self.logger.warning(f"Could not delete backup {backup_file.name}: {e}")
-                        
-        except Exception as e:
-            self.logger.warning(f"Error during study cleanup: {e}")
-    
-    def _save_study_fingerprint(self):
-        """Save a fingerprint of the current optimization configuration for future compatibility checks."""
-        fingerprint = {
-            'optimization_space': self.optimization_space,
-            'config': self.config,
-            'timestamp': datetime.now().isoformat(),
-            'study_version': '1.0'  # Version for future compatibility
-        }
-        
-        fingerprint_file = self.output_dir / 'checkpoints' / 'study_fingerprint.json'
-        with open(fingerprint_file, 'w') as f:
-            json.dump(fingerprint, f, indent=2)
-    
-    def _check_study_fingerprint(self):
-        """Check if the saved study fingerprint matches current configuration."""
-        fingerprint_file = self.output_dir / 'checkpoints' / 'study_fingerprint.json'
-        
-        if not fingerprint_file.exists():
-            return False
-        
-        try:
-            with open(fingerprint_file, 'r') as f:
-                saved_fingerprint = json.load(f)
-            
-            # Check if optimization space matches exactly
-            if saved_fingerprint.get('optimization_space') != self.optimization_space:
-                self.logger.warning("Optimization space mismatch in fingerprint")
-                return False
-            
-            # Check if configuration matches exactly
-            if saved_fingerprint.get('config') != self.config:
-                self.logger.warning("Configuration mismatch in fingerprint")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            self.logger.warning(f"Could not read study fingerprint: {e}")
-            return False
-
-    def run_optimization(self, n_trials=None):
+    def run_optimization(self, n_trials=None, force_new=False):
         """
         Run the Bayesian optimization study.
-        
+
+        Uses Optuna JournalFileStorage so that multiple workers sharing the
+        same configuration directory can optimise concurrently — each worker
+        simply calls study.optimize() and the journal file handles
+        synchronisation.
+
         Args:
-            n_trials: Number of trials to run (uses study_config if None)
-            
+            n_trials: Total target number of trials across all workers.
+            force_new: If True, delete any existing journal and start fresh.
+
         Returns:
-            optuna.Study: Completed optimization study
+            optuna.Study: The (potentially shared) study object.
         """
         if n_trials is None:
             n_trials = self.study_config['max_total_trials']
-        
-        self.logger.info(f"Starting optimization with {n_trials} trials")
-        self.logger.info(f"Configuration: {self.config}")
-        
-        # Study checkpoint file
-        study_file = self.output_dir / 'checkpoints' / 'study_checkpoint.pkl'
-        
-        # Check fingerprint first for quick compatibility check
-        fingerprint_matches = self._check_study_fingerprint()
-        
-        # Try to load existing study
-        study = None
-        start_trial = 0
-        
-        if fingerprint_matches:
-            try:
-                with open(study_file, 'rb') as f:
-                    study = pickle.load(f)
-                
-                # Double-check compatibility with actual study
-                if self._is_study_compatible(study):
-                    self.logger.info(f"Loaded existing compatible study with {len(study.trials)} trials")
-                    start_trial = len(study.trials)
-                else:
-                    self.logger.warning("Study failed detailed compatibility check despite matching fingerprint")
-                    study = None
-                    
-            except FileNotFoundError:
-                self.logger.info("No existing study found")
-            except Exception as e:
-                self.logger.warning(f"Could not load existing study: {e}")
-                study = None
-        else:
-            self.logger.info("Study fingerprint doesn't match current configuration")
-        
-        # If no compatible study found, delete old files and create new study
-        if study is None:
-            self.logger.info("Creating new study - cleaning up old files")
-            self._delete_incompatible_studies()
-            
-            study_name = f'irrigation_optimization_{self.config_name}_{datetime.now().strftime("%Y%m%d_%H%M")}'
-            study = optuna.create_study(
-                direction='minimize',
-                sampler=TPESampler(seed=42, n_startup_trials=10),
-                study_name=study_name
-            )
-            start_trial = 0
-            self.logger.info("Created new optimization study")
-            
-            # Save fingerprint for future compatibility checks
-            self._save_study_fingerprint()
-        else:
-            # Ensure the study is not empty before accessing trials
-            if len(study.trials) > 0:
-                self.logger.info(f"Loaded study with {len(study.trials)} trials")
-            else:
-                self.logger.info("Loaded study is empty, starting optimization")
-        
-        # Save configuration info
-        config_info = {
-            'study_name': study.study_name,
-            'configuration': self.config,
-            'config_name': self.config_name,
-            'optimization_space': self.optimization_space,
-            'study_config': self.study_config,
-            'start_time': datetime.now().isoformat(),
-            'target_trials': n_trials,
-            'base_parameters': {
-                'env_params': {k: v for k, v in self.base_env_params.items() if k != 'weather_data'},
-                'agent_params': self.base_agent_params,
-                'training_params': self.base_training_params
-            }
-        }
-        
-        with open(self.output_dir / 'checkpoints' / 'study_config.json', 'w') as f:
-            json.dump(config_info, f, indent=2)
-        
-        session_start = datetime.now()
-        
-        try:
-            for i in range(n_trials):
-                trial_number = start_trial + i + 1
-                self.logger.info(f"Starting trial {trial_number} ({i+1}/{n_trials} in this session)")
-                
-                # Run single trial
-                study.optimize(self.objective, n_trials=1, show_progress_bar=False)
-                
-                # Memory cleanup
-                if (i + 1) % self.study_config['memory_cleanup_frequency'] == 0:
-                    self.cleanup_memory()
-                
-                # Save checkpoint
-                if (i + 1) % self.study_config['checkpoint_frequency'] == 0 or i == n_trials - 1:
-                    with open(study_file, 'wb') as f:
-                        pickle.dump(study, f)
-                    
-                    session_duration = (datetime.now() - session_start).total_seconds() / 60
-                    self.logger.info(f"Checkpoint saved after {len(study.trials)} total trials")
-                    self.logger.info(f"Session duration: {session_duration:.1f} minutes")
-                    
-                    if study.best_trial:
-                        self.logger.info(f"Current best cost: {study.best_value:.6f} (trial #{study.best_trial.number})")
-                
-                # Check for convergence
-                if len(study.trials) >= 20 and (i + 1) % 10 == 0:
-                    if self.check_convergence(study):
-                        self.logger.info("Study converged - stopping optimization")
-                        break
-        
-        except KeyboardInterrupt:
-            self.logger.info(f"Optimization interrupted by user after {len(study.trials)} trials")
-        except Exception as e:
-            self.logger.error(f"Optimization failed: {e}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Save final study
-        with open(study_file, 'wb') as f:
-            pickle.dump(study, f)
-        
-        # Generate comprehensive results
-        self.generate_results(study)
-        
-        session_duration = (datetime.now() - session_start).total_seconds() / 60
-        self.logger.info(f"Optimization session completed in {session_duration:.1f} minutes")
-        
-        return study
-    
-    def _clear_incompatible_study_files(self):
-        """Clear study checkpoint files when parameter space changes."""
-        self.logger.info("Force clearing all study files")
-        self._delete_incompatible_studies()
-        
-        # Also delete fingerprint
-        fingerprint_file = self.output_dir / 'checkpoints' / 'study_fingerprint.json'
-        if fingerprint_file.exists():
-            fingerprint_file.unlink()
-            self.logger.info("Deleted study fingerprint")
 
-    def check_convergence(self, study):
-        """Check if the study has converged based on recent trials."""
-        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-        
-        if len(completed_trials) < 20:
-            return False
-        
-        recent_costs = [t.value for t in completed_trials[-20:]]
-        cv = np.std(recent_costs) / np.mean(recent_costs) if np.mean(recent_costs) > 0 else float('inf')
-        
-        converged = cv <= self.study_config['convergence_threshold']
-        self.logger.info(f"Convergence check: CV={cv:.4f}, threshold={self.study_config['convergence_threshold']}, converged={converged}")
-        
-        return converged
-    
+        # ---- Storage: journal file supports concurrent multi-worker access ----
+        journal_path = str(self.output_dir / 'checkpoints' / 'optuna_journal.log')
+
+        if force_new and self.worker_id == 0:
+            journal_file = Path(journal_path)
+            if journal_file.exists():
+                journal_file.unlink()
+                self.logger.info("Deleted existing journal (--force-new-study)")
+
+        storage = JournalStorage(JournalFileStorage(journal_path))
+
+        # ---- Create / load study (load_if_exists=True is the key) ----
+        study_name = f'irrigation_optimization_{self.config_name}'
+        sampler = TPESampler(seed=42 + self.worker_id, n_startup_trials=10)
+
+        study = optuna.create_study(
+            study_name=study_name,
+            storage=storage,
+            direction='minimize',
+            sampler=sampler,
+            load_if_exists=True,
+        )
+
+        # ---- Determine how many trials THIS worker should run ----
+        already_done = len([
+            t for t in study.trials
+            if t.state in (optuna.trial.TrialState.COMPLETE,
+                           optuna.trial.TrialState.RUNNING)
+        ])
+        remaining_global = max(0, n_trials - already_done)
+        trials_this_worker = max(1, remaining_global // max(self.n_workers, 1))
+        # Worker 0 picks up the remainder
+        if self.worker_id == 0:
+            trials_this_worker += remaining_global % max(self.n_workers, 1)
+
+        if remaining_global == 0:
+            self.logger.info(
+                f"Worker {self.worker_id}: study already has {already_done} "
+                f"trials — target {n_trials} reached, skipping."
+            )
+        else:
+            self.logger.info(
+                f"Worker {self.worker_id}: running {trials_this_worker} trials "
+                f"(global target: {n_trials}, already done: {already_done})"
+            )
+
+            # ---- Convergence callback — calls study.stop() for this worker ----
+            threshold = self.study_config['convergence_threshold']
+
+            def _convergence_cb(study, trial):
+                completed = [
+                    t for t in study.trials
+                    if t.state == optuna.trial.TrialState.COMPLETE
+                ]
+                if len(completed) >= 20 and len(completed) % 5 == 0:
+                    recent = [t.value for t in completed[-20:]]
+                    mean_v = np.mean(recent)
+                    cv = np.std(recent) / mean_v if mean_v > 0 else float('inf')
+                    if cv <= threshold:
+                        self.logger.info(
+                            f"Worker {self.worker_id}: convergence "
+                            f"(CV={cv:.4f} <= {threshold})"
+                        )
+                        study.stop()
+
+            # ---- Run ----
+            session_start = datetime.now()
+            try:
+                study.optimize(
+                    self.objective,
+                    n_trials=trials_this_worker,
+                    callbacks=[_convergence_cb],
+                    show_progress_bar=False,
+                    gc_after_trial=True,
+                )
+            except KeyboardInterrupt:
+                self.logger.info(
+                    f"Worker {self.worker_id}: interrupted after "
+                    f"{len(study.trials)} total trials"
+                )
+            except Exception as e:
+                self.logger.error(f"Worker {self.worker_id}: {e}")
+                self.logger.error(traceback.format_exc())
+
+            elapsed = (datetime.now() - session_start).total_seconds() / 60
+            self.logger.info(
+                f"Worker {self.worker_id}: finished in {elapsed:.1f} min "
+                f"({len(study.trials)} total trials in study)"
+            )
+
+        # ---- Only worker 0 writes the final results / plots ----
+        if self.worker_id == 0:
+            self.generate_results(study)
+
+        return study
+
     def generate_results(self, study):
         """Generate comprehensive results and visualizations."""
         self.logger.info("Generating comprehensive results")
@@ -713,7 +548,7 @@ class IrrigationOptimizationStudy:
         
         # Save summary
         with open(results_dir / 'optimization_summary.json', 'w') as f:
-            json.dump(summary, f, indent=2)
+            json.dump(summary, f, indent=2, default=lambda o: float(o))
         
         # Generate visualizations
         if len(completed_trials) > 1:
@@ -724,7 +559,7 @@ class IrrigationOptimizationStudy:
             try:
                 importance = optuna.importance.get_param_importances(study)
                 with open(results_dir / 'parameter_importance.json', 'w') as f:
-                    json.dump(importance, f, indent=2)
+                    json.dump(importance, f, indent=2, default=lambda o: float(o))
             except Exception as e:
                 self.logger.warning(f"Could not generate parameter importance: {e}")
         
@@ -743,7 +578,7 @@ class IrrigationOptimizationStudy:
             trial_data.append(trial_info)
         
         with open(results_dir / 'trial_data.json', 'w') as f:
-            json.dump(trial_data, f, indent=2)
+            json.dump(trial_data, f, indent=2, default=lambda o: float(o))
         
         self.logger.info(f"Results saved to {results_dir}")
     
@@ -853,71 +688,61 @@ def main():
     parser.add_argument('--chance-const', type=float, default=0.95,
                         help='Chance constraint value (0.0-1.0, default: 0.95)')
     parser.add_argument('--trials', type=int, default=None,
-                        help='Number of trials to run (default: use config setting)')
-    parser.add_argument('--base-path', type=str, default='/scratch/egomez/irrigation_project_output',
+                        help='Total target number of trials (default: use config setting)')
+    parser.add_argument('--base-path', type=str, default='/scratch/egomez/irrigation_hop',
                         help='Base output path')
+    parser.add_argument('--n-workers', type=int, default=1,
+                        help='Number of parallel workers for this configuration')
+    parser.add_argument('--worker-id', type=int, default=0,
+                        help='Worker index (0-based) — each worker gets a distinct sampler seed')
     parser.add_argument('--force-new-study', action='store_true', default=False,
-                        help='Force creation of new study (ignore existing checkpoints)')
+                        help='Delete existing journal and start a fresh study')
     args = parser.parse_args()
     
     print(f"Starting irrigation PID optimization study")
-    print(f"n_days_ahead: {args.n_days_ahead}")
-    print(f"model_type: {args.model_type}")
-    print(f"chance_const: {args.chance_const}")
-    print(f"force_new_study: {args.force_new_study}")
-    print(f"Base path: {args.base_path}")
-    print(f"Optimization focus: 9 PID controller parameters (KP, KI, KD for s_star, sfc, sw constraints)")
-    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  config    : {args.model_type}  days={args.n_days_ahead}  chance={args.chance_const}")
+    print(f"  worker    : {args.worker_id}/{args.n_workers}")
+    print(f"  base_path : {args.base_path}")
+    print(f"  start     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
-        # Initialize study with individual parameters
         study_manager = IrrigationOptimizationStudy(
             n_days_ahead=args.n_days_ahead,
             model_type=args.model_type,
             chance_const=args.chance_const,
-            base_path=args.base_path
+            base_path=args.base_path,
+            n_workers=args.n_workers,
+            worker_id=args.worker_id,
         )
         
-        # Clear existing study if explicitly requested
-        if args.force_new_study:
-            print("Forcing new study - clearing all previous data")
-            study_manager._clear_incompatible_study_files()
-        else:
-            print("Will try to resume from existing compatible study")
+        study = study_manager.run_optimization(
+            n_trials=args.trials,
+            force_new=args.force_new_study,
+        )
         
-        # Run optimization (will automatically resume if compatible checkpoint exists)
-        study = study_manager.run_optimization(n_trials=args.trials)
-        
-        # Print final summary
+        # Print final summary (from any worker — the study is shared)
+        completed_trials = [
+            t for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE
+        ]
         print(f"\n{'='*60}")
-        print(f"PID OPTIMIZATION COMPLETED")
+        print(f"WORKER {args.worker_id} FINISHED — {study_manager.config_name}")
         print(f"{'='*60}")
-        print(f"Configuration: {study_manager.config_name}")
-        print(f"Total trials: {len(study.trials)}")
+        print(f"Total trials in study: {len(study.trials)}")
         
-        # Check if we have any completed trials before accessing best_trial
-        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-        if len(completed_trials) > 0:
-            print(f"Best cost: {study.best_value:.6f}")
-            print(f"Best trial: #{study.best_trial.number}")
-            print(f"Optimized PID parameters:")
-            
-            # Organize output by constraint for clarity
-            constraints = ['s_star', 'sfc', 'sw']
-            for constraint in constraints:
-                kp_key = f'KP_{constraint}'
-                ki_key = f'KI_{constraint}'
-                kd_key = f'KD_{constraint}'
-                print(f"  {constraint}: KP={study.best_params.get(kp_key, 'N/A'):.6f}, "
-                      f"KI={study.best_params.get(ki_key, 'N/A'):.6f}, "
-                      f"KD={study.best_params.get(kd_key, 'N/A'):.6f}")
+        if completed_trials:
+            print(f"Best cost: {study.best_value:.6f}  (trial #{study.best_trial.number})")
+            for constraint in ('s_star', 'sfc', 'sw'):
+                kp = study.best_params.get(f'KP_{constraint}', 0)
+                ki = study.best_params.get(f'KI_{constraint}', 0)
+                kd = study.best_params.get(f'KD_{constraint}', 0)
+                print(f"  {constraint}: KP={kp:.6f}, KI={ki:.6f}, KD={kd:.6f}")
         else:
-            print("No trials completed successfully.")
-            failed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]
-            print(f"Failed trials: {len(failed_trials)}")
+            failed = [t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]
+            print(f"No completed trials. Failed: {len(failed)}")
         
-        print(f"Results saved to: {study_manager.output_dir}")
-        print(f"Completion time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Results: {study_manager.output_dir}")
+        print(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
     except Exception as e:
         print(f"Study failed: {e}")

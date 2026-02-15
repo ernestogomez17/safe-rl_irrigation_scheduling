@@ -1,72 +1,72 @@
 #!/bin/bash
-#SBATCH --time=20:00:00
+#SBATCH --time=00:15:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
-#SBATCH --job-name=irrigation_parallel
-#SBATCH --output=/scratch/egomez/irrigation_project_output/irrigation_hyperparameter_%j.out
+#SBATCH --job-name=irrigation_hop
+#SBATCH --output=/scratch/egomez/irrigation_hop/job_%j.out
 #SBATCH --mail-type=FAIL,END
 #SBATCH --mail-user=ernesto.gomez@mail.utoronto.ca
 
 #=======================================================================
-# 1. SETUP THE JOB ENVIRONMENT
+# 1. SETUP
 #=======================================================================
-echo "✅ Setting up job environment..."
-echo "Job running on node $(hostname)"
-echo "Allocated CPUs: $SLURM_CPUS_PER_TASK"
+echo "Setting up job environment..."
+echo "Node: $(hostname)  |  CPUs: $SLURM_CPUS_PER_TASK"
 
-# Load necessary modules
 module load StdEnv/2023 gcc/12.3
+module load gnu-parallel
+source /home/egomez/irrigation_project/irrigation_env/bin/activate
 
-# Activate the virtual environment
-source /scratch/egomez/safety-env/bin/activate
+PYTHON=/home/egomez/irrigation_project/irrigation_env/bin/python3
+SCRIPT=/home/egomez/irrigation_project/hop.py
+BASE_PATH=/scratch/egomez/irrigation_hop
+mkdir -p "${BASE_PATH}"
 
 #=======================================================================
-# 2. GENERATE THE COMMANDS TO BE RUN
+# 2. CONFIGURATION GRID
 #=======================================================================
-echo "📝 Generating command file..."
-
-# Define the file to store our commands
-COMMANDS_FILE="commands_to_run.txt"
-
-# Clear the file to ensure it's empty before we start
-> "$COMMANDS_FILE"
-
-# --- DEFINE YOUR PARAMETERS ---
 MODELS=("SACLagrangian" "DDPGLagrangian")
 DAYS_AHEAD=(1 3 7)
 CHANCE_CONSTRAINTS=(0.75 0.85 0.95 1.0)
 
-# --- NESTED LOOPS TO WRITE EACH COMMAND TO THE FILE ---
-for model in "${MODELS[@]}"; do
-  for days in "${DAYS_AHEAD[@]}"; do
-    for chance in "${CHANCE_CONSTRAINTS[@]}"; do
+# Compute workers per configuration to fully utilise allocated CPUs.
+# 2 models x 3 horizons x 4 chance = 24 configurations.
+NUM_COMBOS=$(( ${#MODELS[@]} * ${#DAYS_AHEAD[@]} * ${#CHANCE_CONSTRAINTS[@]} ))
+WORKERS_PER_CONFIG=$(( ${SLURM_CPUS_PER_TASK:-192} / NUM_COMBOS ))
+[[ $WORKERS_PER_CONFIG -lt 1 ]] && WORKERS_PER_CONFIG=1
 
-      # This echo command writes one full line to our text file.
-      # Each line is a complete Python command with a unique set of parameters.
-      echo "/scratch/egomez/safety-env/bin/python3 /home/egomez/irrigation_project/irrigation_optimization_cluster.py  --model-type ${model} --n-days-ahead ${days} --chance-const ${chance}" >> "$COMMANDS_FILE"
+TOTAL_PROCS=$(( NUM_COMBOS * WORKERS_PER_CONFIG ))
+echo "Configs: ${NUM_COMBOS} | Workers/config: ${WORKERS_PER_CONFIG} | Total processes: ${TOTAL_PROCS}"
 
+#=======================================================================
+# 3. LAUNCH — pipe commands directly to GNU Parallel (no temp file)
+#=======================================================================
+echo "Starting parallel execution..."
+
+generate_commands() {
+  for model in "${MODELS[@]}"; do
+    for days in "${DAYS_AHEAD[@]}"; do
+      for chance in "${CHANCE_CONSTRAINTS[@]}"; do
+        for wid in $(seq 0 $(( WORKERS_PER_CONFIG - 1 ))); do
+          echo "${PYTHON} ${SCRIPT} \
+            --model-type ${model} \
+            --n-days-ahead ${days} \
+            --chance-const ${chance} \
+            --n-workers ${WORKERS_PER_CONFIG} \
+            --worker-id ${wid} \
+            --base-path ${BASE_PATH}"
+        done
+      done
     done
   done
-done
+}
 
-echo "Generated $(wc -l < $COMMANDS_FILE) commands in $COMMANDS_FILE"
-
-#=======================================================================
-# 3. EXECUTE THE COMMANDS IN PARALLEL
-#=======================================================================
-echo "🚀 Starting parallel execution of all experiments using GNU Parallel..."
-
-# --jobs tells parallel how many tasks to run simultaneously. Using the Slurm variable is best practice.
-# --joblog creates a detailed log of which commands ran, their exit codes, and timing.
-parallel --jobs "${SLURM_CPUS_PER_TASK:-24}" --joblog parallel_run.log < "$COMMANDS_FILE"
+generate_commands | parallel --jobs "${TOTAL_PROCS}" \
+                             --joblog "${BASE_PATH}/parallel_run_${SLURM_JOB_ID}.log"
 
 #=======================================================================
-# 4. CLEANUP
+# 4. DONE
 #=======================================================================
-echo "✅ All experiments are complete."
-
-# Deactivate the virtual environment
 deactivate
-
-echo "Job finished."
+echo "Job finished at $(date)."

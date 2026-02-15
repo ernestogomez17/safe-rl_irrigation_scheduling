@@ -1,4 +1,4 @@
-from .pid_controller import LagrangianPIDController
+from ..util.pid_controller import LagrangianPIDController
 from .sac import SAC
 from .ddpg import DDPG
 from .sac_lag import SACLagrangian

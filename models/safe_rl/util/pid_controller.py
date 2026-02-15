@@ -33,7 +33,7 @@ class LagrangianPIDController:
         '''
         error_new = float(error)
         
-        # Allow negative derivative to decrease multiplier when safety improves
+        # D-term: only contributes when violations are GROWING (projection clips negative diffs)
         error_diff = projection(error_new - self.error_old)
 
         # Only project the integral term, not individual errors

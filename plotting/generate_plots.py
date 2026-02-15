@@ -21,7 +21,6 @@ def plot_results(data, plot_name, model_directory, episode_count):
     # Save the plot
     plot_file_name = os.path.join(model_directory, f'{plot_name}_plot_episode_{episode_count}.png')
     plt.savefig(plot_file_name)
-    plt.show()
     plt.close(fig)
 
     print(f"{plot_name} plot saved to {plot_file_name}")
@@ -94,7 +93,6 @@ def plot_simulation_data(history_It, history_Rain, history_st, history_ET_o, his
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     plot_simulation_name = os.path.join(model_directory, f'simulation_episode{episode_count}_plot.png')
     plt.savefig(plot_simulation_name)
-    plt.show()
     plt.close(fig)
 
     # Save data to CSV, including history_ET_o and history_ETmax

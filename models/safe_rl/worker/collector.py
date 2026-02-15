@@ -1,10 +1,10 @@
 import gymnasium as gym
 import numpy as np
 import torch
-from safe_rl.worker.replay_buffer import ReplayBuffer
-from safe_rl.policy.base_policy import Policy
-from safe_rl.util.logger import EpochLogger
-from safe_rl.util.torch_util import to_tensor
+from models.safe_rl.worker.replay_buffer import ReplayBuffer
+from models.safe_rl.policy.base_policy import Policy
+from models.safe_rl.util.logger import EpochLogger
+from models.safe_rl.util.torch_util import to_tensor
 
 
 class Collector:

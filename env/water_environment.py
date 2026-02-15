@@ -3,30 +3,35 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 
+from env.params import (
+    SW, SH, SFC, S_STAR, N, ZR, KS, BETA,
+    SEASON_START_DATE, LINI, LDEV, LMID, LLATE,
+    KCINI, KCMID, KCEND,
+)
+
+
 class WaterEnvironment(gym.Env):
     metadata = {'render.modes': ['console']}
 
-    # Soil parameters and constants
-    SW = 0.3    # Wilting point
-    SH = 0.2 * 0.6    # Hygroscopic point
-    SFC = 0.65   # Field capacity
-    S_STAR = 0.35  # Below this, plant will begin to have water stress
+    # Soil parameters — imported from data.params
+    SW = SW
+    SH = SH
+    SFC = SFC
+    S_STAR = S_STAR
+    N = N
+    ZR = ZR
+    KS = KS
+    BETA = BETA
 
-    N = 0.56     # Soil porosity
-    ZR = 400     # Soil rooting depth in mm
-    KS = 35      # Saturated hydraulic conductivity in cm/day
-    BETA = 11  # Empirical parameter
-    
-    # Grape parameters and constants
-    SEASON_START_DATE = 101  # Start on April 10th of the
-    LINI = 20     # Initial growth stage length
-    LDEV = 50   # Development growth stage length
-    LMID = 90   # Mid growth stage length
-    LLATE = 20  # Late growth stage length
-
-    KCINI = 0.4    # Initial crop coefficient
-    KCMID = 0.85    # Mid-season crop coefficient
-    KCEND = 0.35    # End-season crop coefficient
+    # Crop parameters — imported from data.params
+    SEASON_START_DATE = SEASON_START_DATE
+    LINI = LINI
+    LDEV = LDEV
+    LMID = LMID
+    LLATE = LLATE
+    KCINI = KCINI
+    KCMID = KCMID
+    KCEND = KCEND
 
     def __init__(self, weather_data, n_days_ahead):
         super().__init__()
@@ -92,6 +97,7 @@ class WaterEnvironment(gym.Env):
 
         # Initialize other variables
         self.It = 0.0
+        self.block_rain = 0.0   # cumulative rain over the current decision block
         self.terminated = False
         self.truncated = False
         self.elapsed_days = 0
@@ -399,8 +405,10 @@ class WaterEnvironment(gym.Env):
         eta = self.ETmax / (self.N * self.ZR) if self.ETmax > 0 else 1e-6
         normalized_rho = self.current_rho / max(eta, 1e-6)
 
+        # Use cumulative block rain, normalized by the maximum possible
+        # over n_days_ahead days so the feature stays in [0, 1].
         max_rain = float(np.max(self.Rain_base))
-        normalized_rain = self.current_Rain / max(max_rain, 1e-6)
+        normalized_rain = self.block_rain / max(max_rain * self.n_days_ahead, 1e-6)
 
         # Clip to valid [0, 1] range
         normalized_rho = np.clip(normalized_rho, 0, 1)
@@ -424,7 +432,8 @@ class WaterEnvironment(gym.Env):
 
         # Initialize episode metrics
         self.total_reward, self.n_day_counter = 0.0, 0
-        
+        self.block_rain = 0.0
+
         block_is_safe_s_star = 1.0
         block_is_safe_sfc = 1.0
         block_is_safe_sw = 1.0
@@ -439,6 +448,7 @@ class WaterEnvironment(gym.Env):
                 break  # dataset exhausted
 
             self.update_environment()
+            self.block_rain += float(self.current_Rain)
             self._record_history()      # log AFTER env update so all values are same-day
             self.update_soil_moisture()
 

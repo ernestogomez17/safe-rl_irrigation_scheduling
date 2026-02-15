@@ -2,35 +2,47 @@
 Monte-Carlo Stochastic MPC Baseline for Irrigation Scheduling
 =============================================================
 
-A Python translation of the MATLAB chance-constrained irrigation controller
-originally by Adrija.  The controller decides, once every ``n_days_ahead``
-days, the minimum irrigation depth that keeps soil moisture above a
-safety threshold with at least ``chance_pct`` probability across
-``n_mc_samples`` Monte-Carlo rainfall realisations.
+This module implements a Stochastic Model Predictive Control (SMPC) baseline 
+for agricultural irrigation, evaluating chance-constrained water scheduling 
+using Monte-Carlo rainfall simulations.
 
-Because we do not have separate GEFS forecast NetCDF files, the controller
-works with the same ``daily_weather_data.csv`` used by the RL agents:
+Reference
+---------
+Based on the simulation-optimization framework detailed in:
+Roy, A., Narvekar, P., Murtugudde, R., Shinde, V., & Ghosh, S. (2021). 
+"Short and Medium Range Irrigation Scheduling Using Stochastic 
+Simulation-Optimization Framework With Farm-Scale Ecohydrological Model 
+and Weather Forecasts." Water Resources Research. 
+DOI: 10.1029/2020WR029004
 
-* **Training years** (2015-2016) are used to fit a simple forecast error
-  model — for each lead time *d* a linear regression maps the "forecast"
-  (observed rain shifted by *d* days + noise) to the observed rain, and
-  an exponential-distribution parameter ``gamma`` plus a rain-probability
-  ``p`` are estimated per forecast-intensity bin.
+Methodology
+-----------
+1. Forecast Error Modeling (Training: 2015-2016):
+   Fits a forecast error model to historical data. For each lead time `d`, 
+   a linear regression maps the simulated forecast (shifted observed rain + noise) 
+   to the actual observed rain. An exponential distribution rate parameter `gamma` 
+   and rain probability `p` are estimated per forecast-intensity bin.
 
-* **Evaluation year** (2017) is simulated day-by-day: the controller looks
-  up ``p`` and ``gamma`` for the current forecast value, draws MC rainfall
-  samples, propagates soil moisture forward, and bisection-searches for
-  the smallest irrigation satisfying the chance constraint.
+2. SMPC Evaluation (Simulation: 2017):
+   Simulates the environment day-by-day. At each step, the controller:
+   - Retrieves `p` and `gamma` based on the current weather forecast.
+   - Generates Monte-Carlo rainfall sample paths.
+   - Propagates soil moisture dynamics forward.
+   - Performs a bisection search to find the minimum irrigation action that 
+     satisfies the chance constraint (e.g., maintaining moisture above `S_STAR`).
 
-The script can be run standalone:
+Usage
+-----
+The script functions as a standalone CLI tool and outputs a summary to `stdout` 
+along with a detailed CSV. This is designed for direct benchmarking against 
+reinforcement learning (RL) evaluation episodes.
 
-    python mc_irrigation_baseline.py [--n-days-ahead 7] [--chance-pct 0.75]
+    $ python mc_irrigation_baseline.py --n-days-ahead 7 --chance-pct 0.75
 
-and it will write a results CSV plus a summary to stdout, directly
-comparable to the RL evaluation episodes.
-
-Soil parameters are imported from ``water_environment.py`` so both
-approaches use exactly the same physics.
+Notes
+-----
+Soil parameters are strictly imported from `water_environment.py` to ensure 
+both the MPC and RL approaches are evaluated on identical physical dynamics.
 """
 
 from __future__ import annotations
@@ -40,25 +52,23 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Ensure the project root is on sys.path so `data.params` is importable
+# regardless of the working directory.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import numpy as np
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Soil / crop parameters — same as WaterEnvironment
-# ---------------------------------------------------------------------------
-SW      = 0.3       # Wilting point
-SH      = 0.2 * 0.6  # Hygroscopic point
-SFC     = 0.65      # Field capacity
-S_STAR  = 0.35      # Stress-onset threshold
-N_SOIL  = 0.56      # Soil porosity  (n)
-ZR      = 400       # Rooting depth  (mm)
-KS      = 35        # Saturated hydraulic conductivity (cm/day)
-BETA    = 11        # Empirical exponent
-
-# Crop-coefficient schedule (grape)
-SEASON_START_DOY = 101
-LINI, LDEV, LMID, LLATE = 20, 50, 90, 20
-KCINI, KCMID, KCEND = 0.4, 0.85, 0.35
+from env.params import (
+    SW, SH, SFC, S_STAR,
+    N as N_SOIL,       # aliased to avoid shadowing the built-in
+    ZR, KS, BETA,
+    SEASON_START_DATE as SEASON_START_DOY,
+    LINI, LDEV, LMID, LLATE,
+    KCINI, KCMID, KCEND,
+)
 
 
 # ---------------------------------------------------------------------------
