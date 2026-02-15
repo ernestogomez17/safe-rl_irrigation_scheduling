@@ -9,7 +9,7 @@ from models.safe_rl.policy import SAC, DDPG, SACLagrangian, DDPGLagrangian
 from models.safe_rl.util.logger import EpochLogger, setup_logger_kwargs
 from models.safe_rl.util.torch_util import export_device_env_variable, seed_torch
 from models.safe_rl.worker.collector import Collector
-from plotting.generate_plots import plot_simulation_data, plot_results
+from results.plots import plot_simulation_data
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +189,6 @@ def train_agent(env_params, agent_params, training_params, model_directory, iden
                 history_ET_o, history_ETmax, history_Kc, history_rho,
                 env.S_STAR, env.SFC, env.SW,
                 model_directory, epoch, model_name)
-            plot_results(all_rewards, 'rewards', model_directory, epoch)
-            plot_results(all_violations, 'violations', model_directory, epoch)
 
     # ---- Final save ----
     agent.save_model()

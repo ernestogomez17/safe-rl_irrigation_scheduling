@@ -28,10 +28,10 @@ mkdir -p "${BASE_PATH}"
 #=======================================================================
 MODELS=("SACLagrangian" "DDPGLagrangian")
 DAYS_AHEAD=(1 3 7)
-CHANCE_CONSTRAINTS=(0.75 0.85 0.95 1.0)
+CHANCE_CONSTRAINTS=(0.75 0.95)
 
 # Compute workers per configuration to fully utilise allocated CPUs.
-# 2 models x 3 horizons x 4 chance = 24 configurations.
+# 2 models x 3 horizons x 2 chance = 12 configurations.
 NUM_COMBOS=$(( ${#MODELS[@]} * ${#DAYS_AHEAD[@]} * ${#CHANCE_CONSTRAINTS[@]} ))
 WORKERS_PER_CONFIG=$(( ${SLURM_CPUS_PER_TASK:-192} / NUM_COMBOS ))
 [[ $WORKERS_PER_CONFIG -lt 1 ]] && WORKERS_PER_CONFIG=1

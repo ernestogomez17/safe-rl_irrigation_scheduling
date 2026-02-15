@@ -192,7 +192,7 @@ class IrrigationOptimizationStudy:
             'device': self.device,
             'num_epochs': 100,
             'evaluate_episode_num': 1,
-            'plot_save_frequency': 1000,
+            'plot_save_frequency': 10000,
             'sample_episode_num': 20,
             'episode_rerun_num': 5,
             'max_episode_steps': 1000,

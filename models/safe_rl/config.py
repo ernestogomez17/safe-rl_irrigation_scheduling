@@ -26,12 +26,11 @@ def config(dataset, model, n_days_ahead, chance_const):
     # ── Common defaults ──────────────────────────────────────
     base_agent_defaults = {
         'gamma': 0.99,
-        'polyak': 0.99,
+        'polyak': 0.98,
         'model_type': model,
         'hidden_sizes': [128, 128],
         'chance_const': chance_const,
         'optimistic_regularization': 0.0,
-        'temperature': 1.0,
     }
 
     # ── Default PID gains (used by Lagrangian models) ────────
@@ -54,32 +53,34 @@ def config(dataset, model, n_days_ahead, chance_const):
     if model == 'DDPGLagrangian':
         base_agent_params = {
             **base_agent_defaults,
-            'actor_lr': 1e-4,
-            'critic_lr': 1e-3,
-            'cost_critic_lr': 1e-3,
+            'actor_lr': 1e-5,
+            'critic_lr': 1e-4,
+            'cost_critic_lr': 1e-4,
+            'temperature': 0.2,
             **default_pid,
         }
 
     elif model == 'SACLagrangian':
         base_agent_params = {
             **base_agent_defaults,
-            'actor_lr': 3e-4,
+            'actor_lr': 3e-5,
             'critic_lr': 3e-4,
-            'cost_critic_lr': 3e-3,
+            'cost_critic_lr': 3e-4,
+            'temperature': 0.9,
             **default_pid,
         }
 
     elif model == 'DDPG':
         base_agent_params = {
             **base_agent_defaults,
-            'actor_lr': 1e-4,
-            'critic_lr': 1e-3,
+            'actor_lr': 1e-5,
+            'critic_lr': 1e-4,
         }
 
     elif model == 'SAC':
         base_agent_params = {
             **base_agent_defaults,
-            'actor_lr': 3e-4,
+            'actor_lr': 3e-5,
             'critic_lr': 3e-4,
         }
 

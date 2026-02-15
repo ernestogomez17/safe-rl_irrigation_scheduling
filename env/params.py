@@ -7,7 +7,7 @@ single edit propagates everywhere.
 
 Usage
 -----
-    from data.params import *          # quick & dirty
+    from data.params import *          # quick & easy access to all parameters
     from data.params import SW, SFC    # explicit
 
 These values correspond to the default scenario (sandy-loam soil, grape
@@ -19,7 +19,7 @@ here and re-run the pipeline.
 # Soil parameters
 # ---------------------------------------------------------------------------
 SW   = 0.3          # Wilting point                         (volumetric, –)
-SH   = 0.2 * 0.6   # Hygroscopic point                     (volumetric, –)
+SH   = 0.2 * 0.6    # Hygroscopic point                     (volumetric, –)
 SFC  = 0.65         # Field capacity                        (volumetric, –)
 S_STAR = 0.35       # Stress-onset threshold                (volumetric, –)
 
@@ -42,3 +42,10 @@ LLATE = 20          # Late-season stage            (days)
 KCINI = 0.4         # Crop coefficient — initial   (–)
 KCMID = 0.85        # Crop coefficient — mid       (–)
 KCEND = 0.35        # Crop coefficient — end       (–)
+
+# Crop yield response factors (Ky) per growth stage
+# FAO-33 (Doorenbos & Kassam, 1979) — grape (Vitis vinifera)
+KY_INI  = 0.2       # Initial stage Ky             (–)
+KY_DEV  = 0.4       # Development stage Ky         (–)
+KY_MID  = 0.85      # Mid-season stage Ky          (–)
+KY_LATE = 0.4       # Late-season stage Ky         (–)
