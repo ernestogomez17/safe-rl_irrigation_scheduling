@@ -106,17 +106,17 @@ class IrrigationOptimizationStudy:
         # Initialize optimization space - all 9 PID parameters for 3 constraints
         self.optimization_space = {
             # PID parameters for s_star constraint
-            'KP_s_star': {'type': 'float', 'low': 0.1, 'high': 50, 'log': True},
-            'KI_s_star': {'type': 'float', 'low': 0.01, 'high': 30, 'log': True},
-            'KD_s_star': {'type': 'float', 'low': 0.01, 'high': 10, 'log': True},
+            'KP_s_star': {'type': 'float', 'low': 0.01, 'high': 80, 'log': True},
+            'KI_s_star': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
+            'KD_s_star': {'type': 'float', 'low': 0.001, 'high': 30, 'log': True},
             # PID parameters for sfc constraint  
-            'KP_sfc': {'type': 'float', 'low': 0.1, 'high': 50, 'log': True},
-            'KI_sfc': {'type': 'float', 'low': 0.01, 'high': 30, 'log': True},
-            'KD_sfc': {'type': 'float', 'low': 0.01, 'high': 10, 'log': True},
+            'KP_sfc': {'type': 'float', 'low': 0.01, 'high': 80, 'log': True},
+            'KI_sfc': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
+            'KD_sfc': {'type': 'float', 'low': 0.001, 'high': 30, 'log': True},
             # PID parameters for sw constraint
-            'KP_sw': {'type': 'float', 'low': 0.1, 'high': 50, 'log': True},
-            'KI_sw': {'type': 'float', 'low': 0.01, 'high': 30, 'log': True},
-            'KD_sw': {'type': 'float', 'low': 0.01, 'high': 10, 'log': True},
+            'KP_sw': {'type': 'float', 'low': 0.01, 'high': 80, 'log': True},
+            'KI_sw': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
+            'KD_sw': {'type': 'float', 'low': 0.001, 'high': 30, 'log': True},
         }
         
         # Setup base parameters using setup_parameters.py
