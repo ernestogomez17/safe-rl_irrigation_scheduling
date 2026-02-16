@@ -20,9 +20,9 @@ class SAC(Policy):
                  critic_lr=2e-4,
                  ac_model="mlp",
                  hidden_sizes=[64, 64],
-                 alpha=0.15,
+                 alpha=0.1,
                  initial_alpha=0.3,
-                 decay_epoch=350,
+                 decay_epoch=150,
                  use_alpha_decay=True,
                  learn_alpha=False,
                  gamma=0.99,
@@ -44,9 +44,9 @@ class SAC(Policy):
             critic_lr (float): Learning rate for Q-value learning (default: 1e-4)
             ac_model (str): Actor-critic model type, currently only "mlp" supported
             hidden_sizes (list): List of hidden layer sizes for networks (default: [64, 64])
-            alpha (float): Final entropy regularization coefficient (default: 0.15)
-            initial_alpha (float): Initial alpha value for decay (default: 0.6)
-            decay_epoch (int): Number of epochs for alpha decay (default: 400)
+            alpha (float): Final entropy regularization coefficient (default: 0.1)
+            initial_alpha (float): Initial alpha value for decay (default: 0.3)
+            decay_epoch (int): Number of epochs for alpha decay (default: 150)
             use_alpha_decay (bool): Whether to use alpha decay (default: True)
             learn_alpha (bool): Whether to automatically tune alpha (default: False)
             gamma (float): Discount factor (default: 0.99)

@@ -20,9 +20,9 @@ class DDPG(Policy):
                  critic_lr=3e-4,
                  ac_model="mlp",
                  hidden_sizes=[64, 64],
-                 act_noise=0.15,
+                 act_noise=0.1,
                  initial_noise=0.3,
-                 decay_epoch=350,
+                 decay_epoch=150,
                  use_noise_decay=True,
                  gamma=0.99,
                  polyak=0.995,
@@ -35,13 +35,13 @@ class DDPG(Policy):
         Args:
             env (gym.Env): OpenAI Gym environment
             logger (EpochLogger): Logger for metrics and model saving
-            actor_lr (float): Learning rate for policy optimization (default: 1e-4)
-            critic_lr (float): Learning rate for Q-value learning (default: 1e-4)
+            actor_lr (float): Learning rate for policy optimization (default: 5e-6)
+            critic_lr (float): Learning rate for Q-value learning (default: 3e-4)
             ac_model (str): Actor-critic model type, currently only "mlp" supported
             hidden_sizes (list): List of hidden layer sizes for networks (default: [64, 64])
-            act_noise (float): Final noise scale for action exploration (default: 0.15)
-            initial_noise (float): Initial noise scale for exploration (default: 0.6)
-            decay_epoch (int): Number of epochs for noise decay (default: 400)
+            act_noise (float): Final noise scale for action exploration (default: 0.1)
+            initial_noise (float): Initial noise scale for exploration (default: 0.3)
+            decay_epoch (int): Number of epochs for noise decay (default: 150)
             use_noise_decay (bool): Whether to use noise decay (default: True)
             gamma (float): Discount factor (default: 0.99)
             polyak (float): Interpolation factor for polyak averaging (default: 0.995)

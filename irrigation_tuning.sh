@@ -24,15 +24,21 @@ BASE_PATH=/scratch/egomez/irrigation_hpo
 mkdir -p "${BASE_PATH}"
 
 #=======================================================================
-# 2. CONFIGURATION GRID
+# 2. MISSING CONFIGURATIONS (model  days_ahead)
 #=======================================================================
-MODELS=("SACLagrangian" "DDPGLagrangian")
-DAYS_AHEAD=(1 3 7)
-CHANCE_CONSTRAINTS=(0.75 0.95)
+# Only the combos whose PID gains are still missing from the table:
+#   DDPGLagrangian  d=3
+#   DDPGLagrangian  d=7
+#   SACLagrangian   d=7
+COMBOS=(
+  "DDPGLagrangian 3"
+  "DDPGLagrangian 7"
+  "SACLagrangian  7"
+)
+CHANCE_CONSTRAINTS=(0.95)
 
-# Compute workers per configuration to fully utilise allocated CPUs.
-# 2 models x 3 horizons x 2 chance = 12 configurations.
-NUM_COMBOS=$(( ${#MODELS[@]} * ${#DAYS_AHEAD[@]} * ${#CHANCE_CONSTRAINTS[@]} ))
+# 3 model-day pairs x 1 chance constraint = 3 configurations.
+NUM_COMBOS=$(( ${#COMBOS[@]} * ${#CHANCE_CONSTRAINTS[@]} ))
 WORKERS_PER_CONFIG=$(( ${SLURM_CPUS_PER_TASK:-192} / NUM_COMBOS ))
 [[ $WORKERS_PER_CONFIG -lt 1 ]] && WORKERS_PER_CONFIG=1
 
@@ -45,18 +51,17 @@ echo "Configs: ${NUM_COMBOS} | Workers/config: ${WORKERS_PER_CONFIG} | Total pro
 echo "Starting parallel execution..."
 
 generate_commands() {
-  for model in "${MODELS[@]}"; do
-    for days in "${DAYS_AHEAD[@]}"; do
-      for chance in "${CHANCE_CONSTRAINTS[@]}"; do
-        for wid in $(seq 0 $(( WORKERS_PER_CONFIG - 1 ))); do
-          echo "${PYTHON} ${SCRIPT} \
-            --model-type ${model} \
-            --n-days-ahead ${days} \
-            --chance-const ${chance} \
-            --n-workers ${WORKERS_PER_CONFIG} \
-            --worker-id ${wid} \
-            --base-path ${BASE_PATH}"
-        done
+  for combo in "${COMBOS[@]}"; do
+    read -r model days <<< "${combo}"
+    for chance in "${CHANCE_CONSTRAINTS[@]}"; do
+      for wid in $(seq 0 $(( WORKERS_PER_CONFIG - 1 ))); do
+        echo "${PYTHON} ${SCRIPT} \
+          --model-type ${model} \
+          --n-days-ahead ${days} \
+          --chance-const ${chance} \
+          --n-workers ${WORKERS_PER_CONFIG} \
+          --worker-id ${wid} \
+          --base-path ${BASE_PATH}"
       done
     done
   done

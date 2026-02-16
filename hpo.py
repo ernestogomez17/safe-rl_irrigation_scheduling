@@ -97,7 +97,7 @@ class IrrigationOptimizationStudy:
         
         # Study configuration
         self.study_config = {
-            'max_total_trials': 250,
+            'max_total_trials': 500,
             'checkpoint_frequency': 5,
             'convergence_threshold': 0.05,
             'memory_cleanup_frequency': 3,
