@@ -103,7 +103,7 @@ class IrrigationOptimizationStudy:
             'memory_cleanup_frequency': 3,
         }
         
-        # Initialize optimization space - all 9 PID parameters for 3 constraints
+        # Initialize optimization space - 9 PID parameters + 3 learning rates
         self.optimization_space = {
             # PID parameters for s_star constraint
             'KP_s_star': {'type': 'float', 'low': 0.01, 'high': 80, 'log': True},
@@ -117,6 +117,10 @@ class IrrigationOptimizationStudy:
             'KP_sw': {'type': 'float', 'low': 0.01, 'high': 80, 'log': True},
             'KI_sw': {'type': 'float', 'low': 0.001, 'high': 50, 'log': True},
             'KD_sw': {'type': 'float', 'low': 0.001, 'high': 30, 'log': True},
+            # Learning rates (actor, reward critic, cost critic)
+            'actor_lr':       {'type': 'float', 'low': 1e-6, 'high': 1e-3, 'log': True},
+            'critic_lr':      {'type': 'float', 'low': 1e-5, 'high': 1e-2, 'log': True},
+            'cost_critic_lr': {'type': 'float', 'low': 1e-5, 'high': 1e-2, 'log': True},
         }
         
         # Setup base parameters using setup_parameters.py
@@ -125,7 +129,7 @@ class IrrigationOptimizationStudy:
         self.logger.info(f"Initialized optimization study for configuration: {self.config_name}")
         self.logger.info(f"Output directory: {self.output_dir}")
         self.logger.info(f"Configuration: {self.config}")
-        self.logger.info(f"Optimizing 9 PID parameters for 3 constraints: {list(self.optimization_space.keys())}")
+        self.logger.info(f"Optimizing {len(self.optimization_space)} parameters (9 PID + 3 LR): {list(self.optimization_space.keys())}")
     
     def _generate_config_name(self):
         """Generate a descriptive name for the configuration."""
@@ -211,6 +215,39 @@ class IrrigationOptimizationStudy:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
+
+    def _get_warm_start_params(self):
+        """
+        Build a warm-start trial from the current best known parameters.
+
+        Reads PID gains from config.py (model+days lookup) and uses the
+        default learning rates for the model family, giving the TPE sampler
+        a strong initial reference point.
+
+        Returns:
+            dict: Parameter name -> value for study.enqueue_trial()
+        """
+        # Get the base agent params which already contain tuned PID + default LRs
+        _, base_agent, _ = setup_parameters(
+            dataset=self.df,
+            model=self.config['model_type'],
+            n_days_ahead=self.config['n_days_ahead'],
+            chance_const=self.config['chance_const'],
+        )
+
+        warm = {}
+        for param_name, spec in self.optimization_space.items():
+            if param_name in base_agent:
+                val = base_agent[param_name]
+                # Clamp to search bounds (critical when log=True and val ≤ 0)
+                val = max(spec['low'], min(spec['high'], val))
+                warm[param_name] = val
+
+        if warm:
+            self.logger.info(f"Warm-start trial with {len(warm)} params from config.py")
+            for k, v in warm.items():
+                self.logger.info(f"  {k}: {v}")
+        return warm
     
     def objective(self, trial):
         """
@@ -263,6 +300,8 @@ class IrrigationOptimizationStudy:
             self.logger.info(f"  s_star: KP={sampled_params['KP_s_star']:.4f}, KI={sampled_params['KI_s_star']:.4f}, KD={sampled_params['KD_s_star']:.4f}")
             self.logger.info(f"  sfc:    KP={sampled_params['KP_sfc']:.4f}, KI={sampled_params['KI_sfc']:.4f}, KD={sampled_params['KD_sfc']:.4f}")
             self.logger.info(f"  sw:     KP={sampled_params['KP_sw']:.4f}, KI={sampled_params['KI_sw']:.4f}, KD={sampled_params['KD_sw']:.4f}")
+            self.logger.info(f"Learning rates:")
+            self.logger.info(f"  actor_lr={sampled_params['actor_lr']:.2e}, critic_lr={sampled_params['critic_lr']:.2e}, cost_critic_lr={sampled_params['cost_critic_lr']:.2e}")
             
             # Train agent (creates its own env internally)
             # Vary seed per trial so parallel workers explore different trajectories
@@ -406,6 +445,13 @@ class IrrigationOptimizationStudy:
             sampler=sampler,
             load_if_exists=True,
         )
+
+        # ---- Warm-start: enqueue current-best params as the first trial ----
+        if len(study.trials) == 0 and self.worker_id == 0:
+            warm_params = self._get_warm_start_params()
+            if warm_params:
+                study.enqueue_trial(warm_params)
+                self.logger.info("Enqueued warm-start trial with current best params")
 
         # ---- Determine how many trials THIS worker should run ----
         already_done = len([
@@ -575,8 +621,18 @@ class IrrigationOptimizationStudy:
                 summary['parameter_comparison'] = {
                     'base_pid_parameters': base_pid_params,
                     'optimized_pid_parameters': optimized_pid_params,
+                    'base_learning_rates': {
+                        'actor_lr': base_agent_params.get('actor_lr', 'N/A'),
+                        'critic_lr': base_agent_params.get('critic_lr', 'N/A'),
+                        'cost_critic_lr': base_agent_params.get('cost_critic_lr', 'N/A'),
+                    },
+                    'optimized_learning_rates': {
+                        'actor_lr': study.best_params.get('actor_lr'),
+                        'critic_lr': study.best_params.get('critic_lr'),
+                        'cost_critic_lr': study.best_params.get('cost_critic_lr'),
+                    },
                     'optimization_method': 'Bayesian Optimization with TPE Sampler',
-                    'total_parameters_optimized': 9,
+                    'total_parameters_optimized': len(self.optimization_space),
                     'constraints_optimized': ['s_star', 'sfc', 'sw']
                 }
         
@@ -774,6 +830,9 @@ def main():
                 ki = study.best_params.get(f'KI_{constraint}', 0)
                 kd = study.best_params.get(f'KD_{constraint}', 0)
                 print(f"  {constraint}: KP={kp:.6f}, KI={ki:.6f}, KD={kd:.6f}")
+            print(f"  actor_lr={study.best_params.get('actor_lr', 0):.2e}, "
+                  f"critic_lr={study.best_params.get('critic_lr', 0):.2e}, "
+                  f"cost_critic_lr={study.best_params.get('cost_critic_lr', 0):.2e}")
             n_feasible = sum(1 for t in completed_trials if t.value < 1e6)
             print(f"Feasible trials: {n_feasible}/{len(completed_trials)}")
         else:

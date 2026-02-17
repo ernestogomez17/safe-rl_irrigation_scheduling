@@ -9,7 +9,7 @@ from models.safe_rl.config import setup_experiment_parameters  # Import the wrap
 def setup_directories_and_data():
     """Setup directories and load weather data."""
     folder_path_initial = '/home/egomez/irrigation_project/'
-    folder_path_output = '/scratch/egomez/irrigation_project_output/'
+    folder_path_output = '/scratch/egomez/irrigation_output/'
     data_file = os.path.join(folder_path_initial, 'env', 'daily_weather_data.csv')
     model_directory = os.path.join(folder_path_output, 'models')
     

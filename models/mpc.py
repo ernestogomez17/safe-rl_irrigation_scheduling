@@ -530,6 +530,22 @@ def main() -> None:
     out_df.to_csv(out_path, index=False)
     print(f"\nResults saved to {out_path.resolve()}")
 
+    # ── Plot (same format as RL training plots) ──
+    plot_dir = str(out_path.parent)
+    tag = f"det_mpc_days{args.n_days_ahead}_{args.forecast_mode}"
+    from results.plots import plot_baseline_simulation
+    plot_baseline_simulation(
+        result=result,
+        output_dir=plot_dir,
+        model_name="Det-MPC",
+        tag=tag,
+        extra_info=(
+            f"d={args.n_days_ahead}, "
+            f"mode={args.forecast_mode}, "
+            f"margin={args.safety_margin}"
+        ),
+    )
+
 
 if __name__ == "__main__":
     main()

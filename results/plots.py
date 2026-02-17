@@ -109,6 +109,77 @@ def plot_simulation_data(
     print(f"Simulation data saved to {csv_path}")
 
 
+def plot_baseline_simulation(result, output_dir, model_name, tag, extra_info=""):
+    """
+    Save simulation CSV + diagnostic PNG from a baseline SimulationResult.
+
+    Produces the same visual format as the RL training plots so that
+    all methods (RL, MC-MPC, MPC) share a consistent figure style.
+
+    Parameters
+    ----------
+    result : monte_carlo.SimulationResult
+        A populated simulation result (from MC-MPC or deterministic MPC).
+    output_dir : str
+        Directory where the CSV and PNG will be saved.
+    model_name : str
+        Display name for the title (e.g. "MC-MPC", "Det. MPC").
+    tag : str
+        Unique file-safe identifier for this run (e.g. "days7_chance0.75").
+        Used in CSV and PNG filenames to prevent overwriting.
+    extra_info : str
+        Optional suffix for the plot title (e.g. "d=7, α=0.75").
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    irrig_mm = np.asarray(result.irrigation_mm)
+    rain = np.asarray(result.rain_mm)
+    st = np.asarray(result.soil_moisture)
+    ET_o = np.asarray(result.ET_o)
+    ETmax = np.asarray(result.ETmax)
+    Kc = np.asarray(result.Kc)
+    rho_vals = np.asarray(result.rho_vals)
+
+    if len(st) == 0:
+        print("No data available to plot.")
+        return
+
+    # Build DataFrame in the same format expected by _populate_simulation_axes
+    df = pd.DataFrame({
+        "History It (before scaling)": irrig_mm / 1000.0,   # metres
+        "History It (after scaling)": irrig_mm,              # mm
+        "History Rainfall": rain,
+        "History Soil Moisture": st,
+        "History ET_o": ET_o,
+        "History ETmax": ETmax,
+        "History Kc": Kc,
+        "History rho": rho_vals,
+    })
+
+    # Save CSV
+    csv_path = os.path.join(output_dir, f"simulation_data_{tag}.csv")
+    df.to_csv(csv_path, index=False)
+
+    # Diagnostic plot (same renderer as RL training figures)
+    constants = {"s_star": 0.35, "sfc": 0.65, "sw": 0.30}
+    fig, ax1 = plt.subplots(figsize=(14, 6))
+    moisture_line, rain_bars, irr_bars, ax2_lines = _populate_simulation_axes(
+        ax1, df, constants,
+    )
+    title = f"{model_name}"
+    if extra_info:
+        title += f" ({extra_info})"
+    plt.title(title, fontsize=14)
+    _build_simulation_legend(fig, moisture_line, rain_bars, irr_bars, ax2_lines)
+    fig.tight_layout(rect=[0, 0.15, 1, 0.95])
+
+    png_path = os.path.join(output_dir, f"simulation_{tag}_plot.png")
+    plt.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Baseline simulation data saved to {csv_path}")
+    print(f"Baseline simulation plot  saved to {png_path}")
+
+
 # ###########################################################################
 #                                                                           #
 #  SECTION 2 — POST-HOC ANALYSIS (publication-quality figures & stats)     #
@@ -143,7 +214,7 @@ SIMULATION_CONSTANTS = {
 def _default_config() -> dict:
     """Return the default analysis configuration dictionary."""
     return {
-        "base_directory": "/scratch/egomez/irrigation_project_output/models",
+        "base_directory": "/scratch/egomez/irrigation_output/models",
         "smoothing_window": 21,
         "smoothing_polyorder": 5,
         "output_dir": "./plots",
@@ -949,7 +1020,7 @@ def _export_stats_latex(stats_df: pd.DataFrame, episode: int, output_path: str):
 
 def run_analysis(
     *,
-    episode: int = 499,
+    episode: int = 249,
     chance_filters: list[str] | None = None,
     config: dict | None = None,
 ):
