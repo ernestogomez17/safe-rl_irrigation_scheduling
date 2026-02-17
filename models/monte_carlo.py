@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -255,6 +256,56 @@ def _resolve_forecast_columns(
         resolved.append(found)
 
     return resolved
+
+
+def _ensure_forecast_columns(
+    df: pd.DataFrame,
+    n_leads: int,
+    explicit_cols: Sequence[str] | None = None,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Resolve forecast columns, generating synthetic ones in-memory if needed.
+
+    If the DataFrame already contains forecast columns (either explicitly
+    provided or auto-detected), they are used as-is.  Otherwise, synthetic
+    hindcast forecasts are generated on-the-fly via
+    ``env.generate_forecasts.add_synthetic_forecasts``.
+
+    The original DataFrame is **never** modified; a copy is returned when
+    synthetic columns are added.
+
+    Returns
+    -------
+    (df, resolved_cols) : (DataFrame, list[str])
+        Possibly-augmented DataFrame and list of resolved column names.
+    """
+    try:
+        resolved = _resolve_forecast_columns(
+            columns=df.columns,
+            n_leads=n_leads,
+            explicit_cols=explicit_cols,
+        )
+        return df, resolved
+    except ValueError:
+        pass  # columns not found — fall through to synthetic generation
+
+    if verbose:
+        warnings.warn(
+            f"No forecast columns found for {n_leads} lead(s). "
+            "Generating synthetic hindcast forecasts in-memory "
+            "(original CSV is NOT modified).",
+            stacklevel=2,
+        )
+
+    from models.generate_forecasts import add_synthetic_forecasts
+
+    df_aug = add_synthetic_forecasts(df, n_leads=n_leads, seed=123)
+    resolved = _resolve_forecast_columns(
+        columns=df_aug.columns,
+        n_leads=n_leads,
+        explicit_cols=explicit_cols,
+    )
+    return df_aug, resolved
 
 
 @dataclass
@@ -525,7 +576,7 @@ def run_simulation(
     n_days_ahead: int = 7,
     chance_pct: float = 0.75,
     n_mc: int = 600,
-    max_irrig_m: float = 0.06,
+    max_irrig_m: float | None = None,
     eval_start: str = "2017-04-10",
     eval_end: str = "2018-04-09",
     train_start: str = "2015-01-01",
@@ -548,20 +599,26 @@ def run_simulation(
     if decision_stride_days is None:
         decision_stride_days = n_days_ahead
 
+    # Auto-scale irrigation cap to match RL env if not specified
+    if max_irrig_m is None:
+        _slope = (0.06 - 0.01) / (7 - 1)
+        _intercept = 0.01 - _slope * 1
+        max_irrig_m = _slope * n_days_ahead + _intercept
+
     if decision_stride_days <= 0:
         raise ValueError("decision_stride_days must be >= 1")
 
+    # Try to resolve forecast columns; generate synthetic if missing
+    df, resolved_fc_cols = _ensure_forecast_columns(
+        df, n_leads=n_days_ahead, explicit_cols=forecast_cols, verbose=verbose,
+    )
+
+    # Re-split after potential augmentation
     df_train = df[(df["Date"] >= train_start) & (df["Date"] <= train_end)].reset_index(drop=True)
     df_eval = df[(df["Date"] >= eval_start) & (df["Date"] <= eval_end)].reset_index(drop=True)
 
     if len(df_eval) == 0:
         raise ValueError(f"No evaluation data in [{eval_start}, {eval_end}]")
-
-    resolved_fc_cols = _resolve_forecast_columns(
-        columns=df.columns,
-        n_leads=n_days_ahead,
-        explicit_cols=forecast_cols,
-    )
 
     if verbose:
         print(f"Training data   : {len(df_train)} days ({train_start} to {train_end})")
@@ -686,8 +743,11 @@ def main() -> None:
     parser.add_argument(
         "--max-irrig",
         type=float,
-        default=0.06,
-        help="Action cap in meters per decision (0.06 m = 60 mm)",
+        default=None,
+        help=(
+            "Action cap in metres per block. "
+            "Default: auto-scale to match RL env (10 mm @ d=1 … 60 mm @ d=7)"
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data", type=str, default="daily_weather_data.csv")

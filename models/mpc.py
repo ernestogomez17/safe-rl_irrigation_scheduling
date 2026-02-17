@@ -94,7 +94,22 @@ from models.monte_carlo import (
     soil_update,
     SimulationResult,
     _resolve_forecast_columns,
+    _ensure_forecast_columns,
 )
+
+
+# ---------------------------------------------------------------------------
+# RL-env irrigation cap (linear interpolation)
+# ---------------------------------------------------------------------------
+
+def _rl_max_irrigation_mm(n_days_ahead: int) -> float:
+    """Return the per-block irrigation cap (mm) matching the RL environment.
+
+    The RL env linearly scales MAX_IRRIGATION from 10 mm (d=1) to 60 mm (d=7).
+    """
+    slope = (60.0 - 10.0) / (7 - 1)      # mm per day-ahead
+    intercept = 10.0 - slope * 1
+    return slope * n_days_ahead + intercept
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +124,7 @@ def mpc_solve(
     safety_margin: float,
     max_irrig_mm: float,
     reg_weight: float = 1e-4,
+    block_mode: bool = False,
 ) -> np.ndarray:
     """
     Solve the deterministic MPC sub-problem.
@@ -127,6 +143,9 @@ def mpc_solve(
         Tightening margin added to S_STAR for constraint robustness.
     max_irrig_mm : float
         Maximum irrigation per day (mm).
+    block_mode : bool
+        If True, only day-0 irrigation is allowed (u[1:] = 0), matching
+        the RL environment's block-scheduling semantics.
     reg_weight : float
         Quadratic regularisation weight on irrigation.
 
@@ -173,7 +192,10 @@ def mpc_solve(
 
         constraints.append({"type": "ineq", "fun": _moisture_lb})
 
-    bounds = [(0.0, max_irrig_mm)] * n
+    if block_mode and n > 1:
+        bounds = [(0.0, max_irrig_mm)] + [(0.0, 0.0)] * (n - 1)
+    else:
+        bounds = [(0.0, max_irrig_mm)] * n
 
     # ------ solve (attempt 1: cold start) ------
     u0 = np.zeros(n)
@@ -219,7 +241,7 @@ def run_simulation(
     n_days_ahead: int = 7,
     s_ref: float | None = None,
     safety_margin: float = 0.02,
-    max_irrig_m: float = 0.06,
+    max_irrig_m: float | None = None,
     eval_start: str = "2017-04-10",
     eval_end: str = "2018-04-09",
     seed: int = 42,
@@ -228,6 +250,7 @@ def run_simulation(
     forecast_mode: str = "perfect",
     decision_stride_days: int = 1,
     reg_weight: float = 1e-4,
+    block_mode: bool = False,
 ) -> SimulationResult:
     """
     Run the deterministic MPC baseline over an evaluation period.
@@ -242,8 +265,9 @@ def run_simulation(
         Soil moisture setpoint.  Defaults to ``(S_STAR + SFC) / 2``.
     safety_margin : float
         Constraint tightening margin added to S_STAR.
-    max_irrig_m : float
-        Irrigation cap in **metres** per day.
+    max_irrig_m : float or None
+        Irrigation cap in **metres** per block.  When *None* (default),
+        uses the RL-env's linear cap (10 mm @ d=1 … 60 mm @ d=7).
     eval_start, eval_end : str
         Evaluation period (inclusive).
     seed : int
@@ -259,7 +283,12 @@ def run_simulation(
         ``"zero"``     — assume zero rainfall (worst-case / conservative).
     decision_stride_days : int
         Number of days between re-optimisations.
-        Default ``1`` (full receding horizon).
+        Default ``1`` (full receding horizon).  Ignored when
+        *block_mode* is True (overridden to ``n_days_ahead``).
+    block_mode : bool
+        If True, emulates the RL environment's block-scheduling:
+        irrigate **only on day 0** of each block, stride = n_days_ahead,
+        and the irrigation cap is scaled per the RL environment.
     reg_weight : float
         Quadratic regularisation weight on irrigation actions.
 
@@ -273,6 +302,14 @@ def run_simulation(
         raise ValueError(
             f"forecast_mode must be one of {valid_modes}, got '{forecast_mode}'"
         )
+    # ── block mode: override stride & cap ──
+    if block_mode:
+        decision_stride_days = n_days_ahead
+        if max_irrig_m is None:
+            max_irrig_m = _rl_max_irrigation_mm(n_days_ahead) / 1000.0
+    elif max_irrig_m is None:
+        max_irrig_m = 0.06  # legacy default (60 mm)
+
     if s_ref is None:
         s_ref = (S_STAR + SFC) / 2.0
 
@@ -290,11 +327,12 @@ def run_simulation(
     # Resolve forecast columns only when needed
     resolved_fc_cols: list[str] | None = None
     if forecast_mode == "columns":
-        resolved_fc_cols = _resolve_forecast_columns(
-            columns=df.columns,
-            n_leads=n_days_ahead,
-            explicit_cols=forecast_cols,
+        df, resolved_fc_cols = _ensure_forecast_columns(
+            df, n_leads=n_days_ahead, explicit_cols=forecast_cols, verbose=verbose,
         )
+        df_eval = df[
+            (df["Date"] >= eval_start) & (df["Date"] <= eval_end)
+        ].reset_index(drop=True)
 
     max_irrig_mm = max_irrig_m * 1000.0
     s_t = float(rng.uniform(S_STAR, SFC))
@@ -303,6 +341,7 @@ def run_simulation(
         print(f"Evaluation data : {len(df_eval)} days ({eval_start} to {eval_end})")
         print(f"Horizon         : {n_days_ahead} days")
         print(f"Decision stride : {decision_stride_days} day(s)")
+        print(f"Block mode      : {block_mode}")
         print(f"Forecast mode   : {forecast_mode}")
         print(f"Soil ref (s_ref): {s_ref:.3f}")
         print(f"Safety margin   : {safety_margin:.3f}")
@@ -356,6 +395,7 @@ def run_simulation(
             safety_margin=safety_margin,
             max_irrig_mm=max_irrig_mm,
             reg_weight=reg_weight,
+            block_mode=block_mode,
         )
 
         # ---- apply first `apply_span` actions ----
@@ -369,7 +409,8 @@ def run_simulation(
             etmax = kc * eto
             rho_val = float(rho(s_t, etmax))
 
-            irr_d = float(u_plan[d])
+            # Block mode: irrigate only on day 0 (matching RL env)
+            irr_d = float(u_plan[d]) if not block_mode or d == 0 else 0.0
 
             # ---- growth-stage tracking for RY ----
             adjusted_doy = (doy - SEASON_START_DOY) % 365
@@ -441,8 +482,11 @@ def main() -> None:
     parser.add_argument(
         "--max-irrig",
         type=float,
-        default=0.06,
-        help="Action cap in metres per day (0.06 m = 60 mm)",
+        default=None,
+        help=(
+            "Action cap in metres per block. "
+            "Default: auto-scale to match RL env (10 mm @ d=1 … 60 mm @ d=7)"
+        ),
     )
     parser.add_argument(
         "--reg-weight",
@@ -480,6 +524,15 @@ def main() -> None:
         default=1,
         help="Re-optimisation interval in days (default: 1 = receding horizon)",
     )
+    parser.add_argument(
+        "--block-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Match RL env block scheduling: irrigate only on day 0, "
+            "stride = n_days_ahead, auto-scale irrigation cap."
+        ),
+    )
     args = parser.parse_args()
 
     df = pd.read_csv(args.data)
@@ -499,19 +552,29 @@ def main() -> None:
         forecast_mode=args.forecast_mode,
         decision_stride_days=args.decision_stride,
         reg_weight=args.reg_weight,
+        block_mode=args.block_mode,
     )
 
+    # Resolve effective values for summary
+    if args.block_mode:
+        effective_stride = args.n_days_ahead
+        effective_cap_mm = _rl_max_irrigation_mm(args.n_days_ahead)
+    else:
+        effective_stride = args.decision_stride
+        effective_cap_mm = (args.max_irrig if args.max_irrig is not None else 0.06) * 1000.0
     s_ref_used = args.s_ref if args.s_ref is not None else (S_STAR + SFC) / 2.0
 
     print("\n" + "=" * 60)
     print("Deterministic MPC Baseline — Summary")
     print("=" * 60)
     print(f"  Horizon (days)            : {args.n_days_ahead}")
+    print(f"  Block mode                : {args.block_mode}")
     print(f"  Forecast mode             : {args.forecast_mode}")
     print(f"  Soil reference (s_ref)    : {s_ref_used:.3f}")
     print(f"  Safety margin             : {args.safety_margin:.3f}")
     print(f"  Reg weight (λ)            : {args.reg_weight:.1e}")
-    print(f"  Decision stride           : {args.decision_stride} day(s)")
+    print(f"  Decision stride           : {effective_stride} day(s)")
+    print(f"  Irrigation cap            : {effective_cap_mm:.1f} mm")
     print(f"  Total simulated days      : {result.total_days}")
     print(f"  Total irrigation          : {result.total_irrigation_mm:.2f} mm")
     final_ry = result.calculate_relative_yield([KY_INI, KY_DEV, KY_MID, KY_LATE])

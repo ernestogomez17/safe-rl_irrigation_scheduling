@@ -59,11 +59,11 @@ generate_commands() {
   done
 
   # Deterministic MPC baseline: all horizons × forecast modes
-  local FORECAST_MODES=("perfect" "zero")
+  local FORECAST_MODES=("columns" "zero")
   for N_DAYS in "${N_DAYS_AHEAD_VALS[@]}"; do
     for FM in "${FORECAST_MODES[@]}"; do
       local MPC_DIR="${OUTPUT_DIR}/det_mpc/days${N_DAYS}_${FM}"
-      echo "mkdir -p ${MPC_DIR} && ${PYTHON} ${MPC_BASELINE} --n-days-ahead ${N_DAYS} --forecast-mode ${FM} --data ${DATA} --out ${MPC_DIR}/det_mpc_days${N_DAYS}_${FM}.csv"
+      echo "mkdir -p ${MPC_DIR} && ${PYTHON} ${MPC_BASELINE} --n-days-ahead ${N_DAYS} --forecast-mode ${FM} --block-mode --data ${DATA} --out ${MPC_DIR}/det_mpc_days${N_DAYS}_${FM}.csv"
     done
   done
 }
